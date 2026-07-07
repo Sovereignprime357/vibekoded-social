@@ -103,6 +103,12 @@ def _load_our_own_post_uris() -> Set[str]:
     return {r.get("uri") for r in _read_jsonl(POSTED_LOG) if r.get("uri")}
 
 
+def _recent_posted(limit: int = 10) -> List[Dict[str, Any]]:
+    """Last `limit` posts we shipped (file order = chronological), for thread polling."""
+    rows = [r for r in _read_jsonl(POSTED_LOG) if r.get("uri")]
+    return rows[-limit:]
+
+
 def _mark_handled(notification: Dict[str, Any], action: str) -> None:
     _append_jsonl(
         HANDLED_LOG,
@@ -241,6 +247,20 @@ def process_own_account(notification: Dict[str, Any], bluesky_module, session: D
         )
         print(f"[banter] posted own_account reply: uri={result.get('uri')}")
         _mark_handled(notification, "posted")
+        # Loop-breaker: record OUR OWN reply's URI as handled so the thread-poll
+        # path (poll_own_threads) never treats it as a fresh human comment on the
+        # next tick — otherwise we'd banter-reply to our own banter forever.
+        if result.get("uri"):
+            _append_jsonl(
+                HANDLED_LOG,
+                {
+                    "ts": _now_iso(),
+                    "notification_uri": result.get("uri"),
+                    "reason": "self_banter_output",
+                    "author_handle": session.get("handle"),
+                    "action": "own_reply_posted",
+                },
+            )
     except Exception as exc:  # noqa: BLE001
         print(f"[banter] Bluesky reply failed for own_account case: {exc!r}")
         _mark_handled(notification, "post_failed")
@@ -291,6 +311,62 @@ def process_stranger(notification: Dict[str, Any]) -> None:
     _mark_handled(notification, "drafted")
 
 
+def poll_own_threads(
+    bluesky_module,
+    session: Dict[str, Any],
+    our_did: str,
+    handled_ids: Set[str],
+    our_own_post_uris: Set[str],
+) -> int:
+    """
+    Second detection path: catch the co-pilot's manual comments, which are
+    authored BY our own account and therefore never surface in
+    listNotifications (Bluesky doesn't notify you about your own replies).
+
+    Poll the threads of our recent posts; a direct reply authored by OUR OWN
+    DID that is neither one of our scheduled posts nor already handled is a
+    human manual comment -> banter-reply to it via process_own_account.
+    Strangers (other DIDs) are skipped here — they're handled by the
+    notifications flow (process_stranger), so we don't double-process them.
+    """
+    processed = 0
+    for row in _recent_posted(limit=10):
+        post_uri = row.get("uri")
+        if not post_uri:
+            continue
+        try:
+            thread = (
+                bluesky_module.get_post_thread(post_uri, session=session, depth=1) or {}
+            ).get("thread") or {}
+        except Exception as exc:  # noqa: BLE001 — one bad/deleted post must not kill the tick
+            print(f"[banter] get_post_thread failed for {post_uri}: {exc!r}")
+            continue
+
+        for node in (thread.get("replies") or []):
+            post = node.get("post")  # absent for #notFoundPost / #blockedPost nodes
+            if not post:
+                continue
+            reply_uri = post.get("uri")
+            author_did = (post.get("author") or {}).get("did")
+            if not reply_uri or author_did != our_did:
+                continue  # stranger reply -> handled by the notifications path
+            if reply_uri in our_own_post_uris or reply_uri in handled_ids:
+                continue  # our own scheduled post, or already handled
+
+            pseudo = {
+                "uri": reply_uri,
+                "cid": post.get("cid"),
+                "reason": "self_reply",
+                "author": post.get("author") or {},
+                "record": post.get("record") or {},  # carries text + reply.{root,parent}
+            }
+            process_own_account(pseudo, bluesky_module, session)
+            handled_ids.add(reply_uri)  # guard against re-processing within this tick
+            processed += 1
+
+    return processed
+
+
 def run_banter() -> int:
     """
     Execute one notification-poll tick. Returns a process exit code
@@ -330,6 +406,23 @@ def run_banter() -> int:
         print("[banter] no new reply/mention notifications this tick.")
     else:
         print(f"[banter] processed {new_count} new notification(s) this tick.")
+
+    # Second pass: poll our own recent threads for the co-pilot's manual
+    # comments, which never appear in listNotifications (Bluesky doesn't notify
+    # an account about its own replies). Keep the notifications pass above for
+    # strangers; this pass only acts on self-authored replies.
+    try:
+        thread_count = poll_own_threads(
+            bluesky, session, our_did, handled_ids, our_own_post_uris
+        )
+    except Exception as exc:  # noqa: BLE001 — thread poll must not fail an otherwise-clean tick
+        print(f"[banter] thread-poll pass errored (non-fatal): {exc!r}")
+        thread_count = 0
+
+    if thread_count:
+        print(f"[banter] posted {thread_count} in-thread banter reply(ies) from self-reply poll.")
+    else:
+        print("[banter] no new self-replies found in own threads this tick.")
 
     return 0
 
