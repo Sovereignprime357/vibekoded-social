@@ -47,8 +47,9 @@ jobs:
           BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
           # Triage runs on a FREE model. TRIAGE_MODEL picks gemini|groq (repo
-          # variable, default gemini). Only the matching key needs to exist.
-          TRIAGE_MODEL: ${{ vars.TRIAGE_MODEL || 'gemini' }}
+          # variable, default GROQ — Gemini free tier = 20 req/day, useless for a
+          # scanner). Only the matching key needs to exist.
+          TRIAGE_MODEL: ${{ vars.TRIAGE_MODEL || 'groq' }}
           # Model IDs are perishable (Google killed gemini-2.0-flash 2026-06-01,
           # Groq killed llama-3.3-70b-versatile 2026-06-17). Overridable via repo
           # variables so the next deprecation is a variable change, not a code push.

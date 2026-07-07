@@ -32,8 +32,9 @@ VALID_ACTIONS = {"like", "reply", "repost", "follow", "none"}
 VALID_CONFIDENCE = {"high", "med", "low"}
 
 # Triage wants a free model + determinism, distinct from the anthropic
-# post-writer. TRIAGE_MODEL overrides; default gemini.
-TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "gemini")
+# post-writer. TRIAGE_MODEL overrides; default GROQ — Gemini's free tier is
+# 20 requests/day (useless for a scanner), Groq's free tier is generous.
+TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "groq")
 
 
 # ---------------------------------------------------------------------------
