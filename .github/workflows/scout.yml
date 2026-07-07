@@ -49,7 +49,12 @@ jobs:
           # Triage runs on a FREE model. TRIAGE_MODEL picks gemini|groq (repo
           # variable, default gemini). Only the matching key needs to exist.
           TRIAGE_MODEL: ${{ vars.TRIAGE_MODEL || 'gemini' }}
+          # Model IDs are perishable (Google killed gemini-2.0-flash 2026-06-01,
+          # Groq killed llama-3.3-70b-versatile 2026-06-17). Overridable via repo
+          # variables so the next deprecation is a variable change, not a code push.
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'openai/gpt-oss-120b' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           # The comms + approval layer.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

@@ -26,12 +26,18 @@ MAX_POST_LENGTH = 300
 
 PERSONA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PERSONA.md")
 
+# Model IDs are perishable — especially on fast-moving free tiers. Google shut
+# down gemini-2.0-flash on 2026-06-01 and Groq deprecated llama-3.3-70b-versatile
+# on 2026-06-17, both of which this file originally hardcoded. Lesson baked in:
+# model names are CONFIG (env-overridable), never code. A future deprecation is
+# now a repo-variable change, not a code edit.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+    f"{GEMINI_MODEL}:generateContent"
 )
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
