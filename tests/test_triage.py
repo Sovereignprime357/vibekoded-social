@@ -6,11 +6,14 @@ gets the most cases. classify_* are exercised through the DRY_RUN stub path,
 which needs no API key.
 """
 
+import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import generate  # noqa: E402
 import triage  # noqa: E402
 
 
@@ -121,3 +124,104 @@ def test_classify_all_filters_to_surfaceable(monkeypatch):
     # stub surfaces index 0 and 1, drops index 2
     assert len(surfaced) == 2
     assert {s["uri"] for s in surfaced} == {"at://1", "at://2"}
+
+
+# --- parse_batch_verdicts (the defensive batch parser) ---------------------
+
+def test_parse_batch_clean_array():
+    raw = json.dumps([
+        {"index": 0, "on_mission": True, "action": "like", "confidence": "high"},
+        {"index": 1, "on_mission": False, "action": "none", "confidence": "low"},
+    ])
+    out = triage.parse_batch_verdicts(raw, 2)
+    assert out[0]["action"] == "like"
+    assert out[1]["on_mission"] is False
+
+
+def test_parse_batch_one_malformed_item_only_that_slot_none():
+    # A non-dict element in the middle must null ONLY its slot, never the batch.
+    raw = ('[{"index":0,"on_mission":true,"action":"like","confidence":"high"}, '
+           '"BROKEN", '
+           '{"index":2,"on_mission":true,"action":"reply","confidence":"med"}]')
+    out = triage.parse_batch_verdicts(raw, 3)
+    assert out[0] is not None and out[0]["action"] == "like"
+    assert out[1] is None
+    assert out[2] is not None and out[2]["action"] == "reply"
+
+
+def test_parse_batch_short_array_pads_none():
+    raw = json.dumps([{"index": 0, "on_mission": True, "action": "like", "confidence": "low"}])
+    out = triage.parse_batch_verdicts(raw, 3)
+    assert out[0] is not None
+    assert out[1] is None and out[2] is None
+
+
+def test_parse_batch_garbage_all_none():
+    assert triage.parse_batch_verdicts("not json at all", 2) == [None, None]
+    assert triage.parse_batch_verdicts("", 2) == [None, None]
+    # a JSON object (not array) is not a batch -> all None
+    assert triage.parse_batch_verdicts('{"index":0}', 2) == [None, None]
+
+
+def test_parse_batch_tolerates_code_fence():
+    raw = "```json\n[{\"index\":0,\"on_mission\":true,\"action\":\"like\",\"confidence\":\"low\"}]\n```"
+    out = triage.parse_batch_verdicts(raw, 1)
+    assert out[0]["action"] == "like"
+
+
+def test_parse_batch_maps_by_explicit_index_out_of_order():
+    raw = json.dumps([
+        {"index": 1, "on_mission": True, "action": "reply", "confidence": "high"},
+        {"index": 0, "on_mission": True, "action": "like", "confidence": "low"},
+    ])
+    out = triage.parse_batch_verdicts(raw, 2)
+    assert out[0]["action"] == "like"
+    assert out[1]["action"] == "reply"
+
+
+# --- classify_all live batch path (monkeypatched model, no network) --------
+
+def _live_env(monkeypatch):
+    """Force the live batch path: not dry-run, key present, no real sleeping."""
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(triage, "TRIAGE_BATCH_PAUSE_S", 0)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+
+def test_classify_all_live_batch_surfaces_on_mission(monkeypatch):
+    _live_env(monkeypatch)
+    cands = [_cand("at://1", "q one?"), _cand("at://2", "two"), _cand("at://3", "three")]
+    arr = json.dumps([
+        {"index": 0, "on_mission": True, "action": "reply", "why": "real", "confidence": "high"},
+        {"index": 1, "on_mission": False, "action": "none", "why": "off", "confidence": "low"},
+        {"index": 2, "on_mission": True, "action": "like", "why": "nod", "confidence": "med"},
+    ])
+    monkeypatch.setattr(generate, "complete", lambda *a, **k: arr)
+    surfaced = triage.classify_all(cands, rubric="(r)")
+    assert {s["uri"] for s in surfaced} == {"at://1", "at://3"}
+
+
+def test_classify_all_live_api_failure_surfaces_nothing(monkeypatch):
+    _live_env(monkeypatch)
+    cands = [_cand("at://1", "q one?"), _cand("at://2", "two")]
+
+    def boom(*a, **k):
+        raise generate.RateLimitError("HTTP 429 from groq: rate_limit_exceeded", retry_after=1.0)
+
+    monkeypatch.setattr(generate, "complete", boom)
+    # Must not raise, and must surface nothing rather than stub garbage.
+    surfaced = triage.classify_all(cands, rubric="(r)")
+    assert surfaced == []
+
+
+def test_classify_all_live_one_bad_item_skipped_rest_surface(monkeypatch):
+    _live_env(monkeypatch)
+    cands = [_cand("at://1", "one"), _cand("at://2", "two"), _cand("at://3", "three")]
+    raw = ('[{"index":0,"on_mission":true,"action":"like","confidence":"high"}, '
+           '"BROKEN", '
+           '{"index":2,"on_mission":true,"action":"like","confidence":"med"}]')
+    monkeypatch.setattr(generate, "complete", lambda *a, **k: raw)
+    surfaced = triage.classify_all(cands, rubric="(r)")
+    # at://2's verdict was malformed -> skipped; the other two surface.
+    assert {s["uri"] for s in surfaced} == {"at://1", "at://3"}

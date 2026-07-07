@@ -57,6 +57,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL || 'openai/gpt-oss-120b' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Triage classifies candidates in BATCHES (rubric sent once per batch,
+          # not once per post) to stay under the free tier's tokens/minute cap.
+          # ~15 covers a full 60-candidate tick in ~4 calls; tune without a code push.
+          SCOUT_TRIAGE_BATCH_SIZE: ${{ vars.SCOUT_TRIAGE_BATCH_SIZE || '15' }}
           # The comms + approval layer.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           # Scout has its OWN pause switch, independent of post-tick's DRY_RUN,

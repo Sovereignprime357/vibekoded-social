@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -46,6 +47,45 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 class GenerationError(Exception):
     """Raised when a live model call fails after retries. Never raised in DRY_RUN."""
+
+
+class RateLimitError(GenerationError):
+    """
+    A 429 from the model provider. Carries `retry_after` (seconds) so the retry
+    loop can wait the amount the provider asked for instead of hammering the
+    same wall — the whole reason triage was silently falling back to stubs.
+    """
+
+    def __init__(self, message: str, retry_after: float = 0.0) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+# Longest we'll ever sleep for a single 429 backoff. A provider occasionally
+# returns an absurd Retry-After; cap it so a tick can't hang for minutes.
+_BACKOFF_CAP_S = 30.0
+
+_RETRY_AFTER_RE = re.compile(r"try again in ([0-9.]+)\s*s", re.IGNORECASE)
+
+
+def _parse_retry_after(resp: "requests.Response") -> float:
+    """
+    Best-effort seconds-to-wait for a 429. Prefer the Retry-After header; fall
+    back to Groq's "Please try again in 9.45s" body message; else a sane default.
+    """
+    header = resp.headers.get("Retry-After")
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass
+    m = _RETRY_AFTER_RE.search(resp.text or "")
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +266,13 @@ def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeo
     except requests.RequestException as exc:
         raise GenerationError(f"network error calling {url}: {exc}") from exc
 
+    if resp.status_code == 429:
+        # Rate limited. Surface it as a distinct error carrying how long to wait
+        # so the retry loop can honor it instead of instantly re-hitting the wall.
+        raise RateLimitError(
+            f"HTTP 429 from {url}: {resp.text}",
+            retry_after=_parse_retry_after(resp),
+        )
     if resp.status_code >= 400:
         raise GenerationError(f"HTTP {resp.status_code} from {url}: {resp.text}")
 
@@ -345,6 +392,12 @@ def generate(entry: Dict[str, Any], kind: str = "post", retries: int = 2) -> str
             if cleaned:
                 return cleaned
             last_exc = GenerationError("model returned empty output after cleaning")
+        except RateLimitError as exc:
+            last_exc = exc
+            wait = min(exc.retry_after or _BACKOFF_CAP_S, _BACKOFF_CAP_S)
+            print(f"[generate] attempt {attempt}/{attempts} rate-limited (429); waiting {wait:.1f}s")
+            if attempt < attempts:
+                time.sleep(wait)
         except GenerationError as exc:
             last_exc = exc
             print(f"[generate] attempt {attempt}/{attempts} failed: {exc}")
@@ -379,8 +432,13 @@ def complete(
         each other.
       - Low default temperature (classification wants determinism, not flair).
 
-    DRY_RUN or a missing API key returns "" — the caller supplies its own
-    domain-specific deterministic stub (a generic stub can't classify).
+    Failure contract (load-bearing — the caller MUST distinguish these):
+      - DRY_RUN or a missing API key returns "" — an INTENTIONAL "no model ran",
+        the caller supplies its own deterministic stub (a generic stub can't classify).
+      - A real API failure (429/HTTP error/bad shape) after retries RAISES the last
+        exception. This is deliberately NOT collapsed into "" — conflating "no key"
+        with "the model errored" is exactly the bug that made triage post
+        "[DRY_RUN stub]" garbage while it was really being rate-limited.
     """
     model = (model or os.environ.get("TRIAGE_MODEL") or os.environ.get("GEN_MODEL") or "gemini").strip().lower()
     if model == "claude":
@@ -408,9 +466,17 @@ def complete(
             if out and out.strip():
                 return out.strip()
             last_exc = GenerationError("model returned empty output")
+        except RateLimitError as exc:
+            last_exc = exc
+            wait = min(exc.retry_after or _BACKOFF_CAP_S, _BACKOFF_CAP_S)
+            print(f"[complete] attempt {attempt}/{attempts} rate-limited (429); waiting {wait:.1f}s")
+            if attempt < attempts:
+                time.sleep(wait)
         except GenerationError as exc:
             last_exc = exc
             print(f"[complete] attempt {attempt}/{attempts} failed: {exc}")
 
+    # Every attempt failed a REAL call (we passed the dry-run/no-key gate above).
+    # Raise so the caller can log the true cause instead of mislabeling it a stub.
     print(f"[complete] all {attempts} attempt(s) exhausted; last error: {last_exc}")
-    return ""
+    raise last_exc if last_exc is not None else GenerationError("completion failed")
