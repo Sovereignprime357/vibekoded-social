@@ -1,0 +1,76 @@
+name: scout-tick
+
+# The agentic SEE -> TRIAGE -> SURFACE loop (SPEC-v2.md). Runs hourly, scans
+# Bluesky for on-mission posts, and surfaces the good ones to Slack for the
+# operator's yes/no. It takes NO public action on its own (T1, human-gated),
+# so an unattended run is harmless: worst case it prints to this log.
+#
+# Safe-degrade ladder (no risk at any rung):
+#   - no GEMINI/GROQ key  -> triage uses its labelled stub (no real judgment,
+#     but nothing is posted either).
+#   - no SLACK webhook    -> surface prints to this Actions log instead of Slack.
+#   - SCOUT_DRY_RUN=1 var  -> preview-only, side-effect-free (no state written).
+# It becomes useful automatically once GEMINI_API_KEY + SLACK_WEBHOOK_URL exist.
+on:
+  schedule:
+    - cron: "23 * * * *"   # hourly, offset to :23
+  workflow_dispatch: {}     # run on demand from the Actions tab
+
+# Never let two ticks race on the state commit-back. Don't cancel a tick
+# mid-flight (it may have already surfaced items and needs to log them).
+concurrency:
+  group: vibekoded-social-scout-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # required to commit scout state files back
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scout_tick
+        env:
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          # Triage runs on a FREE model. TRIAGE_MODEL picks gemini|groq (repo
+          # variable, default gemini). Only the matching key needs to exist.
+          TRIAGE_MODEL: ${{ vars.TRIAGE_MODEL || 'gemini' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # The comms + approval layer.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Scout has its OWN pause switch, independent of post-tick's DRY_RUN,
+          # so posting and scouting can be toggled separately. Set repo
+          # variable SCOUT_DRY_RUN=1 for preview-only.
+          DRY_RUN: ${{ vars.SCOUT_DRY_RUN || '0' }}
+        run: python scout_tick.py
+
+      - name: Commit updated scout state files
+        # scout_tick mutates scout-state.json (last-scan marker),
+        # scout-seen.jsonl (cross-run dedup ledger), and scout-surfaced.jsonl
+        # (audit log, I-LOGGED). Commit whichever changed.
+        run: |
+          git config user.name "vibekoded-social-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add scout-state.json scout-seen.jsonl scout-surfaced.jsonl
+          if git diff --cached --quiet; then
+            echo "No scout state changes to commit."
+          else
+            git commit -m "chore(scout-tick): update scout state [skip ci]"
+            git pull --rebase origin HEAD
+            git push
+          fi

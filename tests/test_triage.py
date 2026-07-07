@@ -1,0 +1,123 @@
+"""
+tests/test_triage.py — the TRIAGE step's parsing + stub logic, no network.
+
+parse_verdict() is the load-bearing bit (models return messy text), so it
+gets the most cases. classify_* are exercised through the DRY_RUN stub path,
+which needs no API key.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import triage  # noqa: E402
+
+
+# --- parse_verdict ---------------------------------------------------------
+
+def test_parse_clean_json():
+    v = triage.parse_verdict('{"on_mission": true, "lane": "memory", "action": "reply", "why": "wheelhouse", "confidence": "high"}')
+    assert v["on_mission"] is True
+    assert v["action"] == "reply"
+    assert v["lane"] == "memory"
+    assert v["confidence"] == "high"
+
+
+def test_parse_json_in_code_fence():
+    raw = "```json\n{\"on_mission\": true, \"action\": \"like\", \"confidence\": \"med\"}\n```"
+    v = triage.parse_verdict(raw)
+    assert v["action"] == "like"
+    assert v["confidence"] == "med"
+
+
+def test_parse_json_with_surrounding_prose():
+    raw = 'Sure, here is my verdict: {"on_mission": false, "action": "none", "why": "spam"} hope that helps!'
+    v = triage.parse_verdict(raw)
+    assert v["on_mission"] is False
+    assert v["action"] == "none"
+
+
+def test_not_on_mission_forces_action_none():
+    v = triage.parse_verdict('{"on_mission": false, "action": "reply", "confidence": "high"}')
+    assert v["action"] == "none"
+
+
+def test_invalid_action_coerced_to_none():
+    v = triage.parse_verdict('{"on_mission": true, "action": "smash", "confidence": "high"}')
+    assert v["action"] == "none"
+
+
+def test_invalid_confidence_coerced_to_low():
+    v = triage.parse_verdict('{"on_mission": true, "action": "like", "confidence": "extreme"}')
+    assert v["confidence"] == "low"
+
+
+def test_on_mission_string_true_is_boolean():
+    v = triage.parse_verdict('{"on_mission": "true", "action": "like", "confidence": "low"}')
+    assert v["on_mission"] is True
+
+
+def test_parse_garbage_returns_none():
+    assert triage.parse_verdict("no json here at all") is None
+    assert triage.parse_verdict("") is None
+    assert triage.parse_verdict(None) is None
+
+
+def test_why_is_length_capped():
+    long_why = "x" * 500
+    v = triage.parse_verdict('{"on_mission": true, "action": "like", "why": "' + long_why + '", "confidence": "low"}')
+    assert len(v["why"]) <= 200
+
+
+# --- stub verdict ----------------------------------------------------------
+
+def _cand(uri, text, lane_id="memory"):
+    return {
+        "uri": uri, "cid": "c", "author_handle": "u.bsky.social", "author_did": "did:plc:u",
+        "text": text, "lane_id": lane_id, "lane_label": "Agent memory",
+        "url": "https://bsky.app/profile/u.bsky.social/post/1",
+    }
+
+
+def test_stub_surfaces_first_two_and_reply_on_question():
+    q = triage._stub_verdict(_cand("at://1", "how do you handle memory?"), index=0)
+    assert q["on_mission"] is True
+    assert q["action"] == "reply"  # has a question mark
+
+    plain = triage._stub_verdict(_cand("at://2", "shipped a thing today"), index=1)
+    assert plain["on_mission"] is True
+    assert plain["action"] == "like"
+
+    dropped = triage._stub_verdict(_cand("at://3", "another post"), index=2)
+    assert dropped["on_mission"] is False
+    assert dropped["action"] == "none"
+
+
+def test_stub_is_deterministic():
+    a = triage._stub_verdict(_cand("at://1", "same text?"), index=0)
+    b = triage._stub_verdict(_cand("at://1", "same text?"), index=0)
+    assert a == b
+
+
+# --- classify_* via DRY_RUN stub (no key needed) ---------------------------
+
+def test_classify_one_uses_stub_in_dry_run(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    result = triage.classify_one(_cand("at://1", "how to persist context?"), rubric="(test rubric)", index=0)
+    assert result["on_mission"] is True
+    assert result["action"] == "reply"
+    assert result["uri"] == "at://1"  # candidate fields preserved
+
+
+def test_classify_all_filters_to_surfaceable(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    cands = [
+        _cand("at://1", "question one?"),
+        _cand("at://2", "statement two"),
+        _cand("at://3", "third one drops"),
+    ]
+    surfaced = triage.classify_all(cands, rubric="(test rubric)")
+    # stub surfaces index 0 and 1, drops index 2
+    assert len(surfaced) == 2
+    assert {s["uri"] for s in surfaced} == {"at://1", "at://2"}

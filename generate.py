@@ -229,13 +229,13 @@ def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeo
         raise GenerationError(f"non-JSON response from {url}: {resp.text[:200]!r}") from exc
 
 
-def _call_gemini(prompt: str, api_key: str) -> str:
+def _call_gemini(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: int = 200) -> str:
     url = f"{GEMINI_ENDPOINT}?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.9,
-            "maxOutputTokens": 200,
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
         },
     }
     result = _post_json(url, {"Content-Type": "application/json"}, payload)
@@ -247,12 +247,12 @@ def _call_gemini(prompt: str, api_key: str) -> str:
         raise GenerationError(f"unexpected Gemini response shape: {result!r}") from exc
 
 
-def _call_groq(prompt: str, api_key: str) -> str:
+def _call_groq(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: int = 200) -> str:
     payload = {
         "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.9,
-        "max_tokens": 200,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
     headers = {
         "Content-Type": "application/json",
@@ -265,11 +265,11 @@ def _call_groq(prompt: str, api_key: str) -> str:
         raise GenerationError(f"unexpected Groq response shape: {result!r}") from exc
 
 
-def _call_anthropic(prompt: str, api_key: str) -> str:
+def _call_anthropic(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: int = 300) -> str:
     payload = {
         "model": ANTHROPIC_MODEL,
-        "max_tokens": 300,
-        "temperature": 0.9,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
         "messages": [{"role": "user", "content": prompt}],
     }
     headers = {
@@ -348,4 +348,63 @@ def generate(entry: Dict[str, Any], kind: str = "post", retries: int = 2) -> str
     # path handles it uniformly with a guard failure. Callers that need to
     # distinguish "generation failed" from "guard blocked" can check for "".
     print(f"[generate] all {attempts} attempt(s) exhausted; last error: {last_exc}")
+    return ""
+
+
+def complete(
+    prompt: str,
+    model: Optional[str] = None,
+    temperature: float = 0.2,
+    max_tokens: int = 512,
+    retries: int = 2,
+) -> str:
+    """
+    Generic single-shot completion for callers that are NOT writing a post —
+    e.g. triage.py asking a free model "is this candidate on-mission?" and
+    expecting structured JSON back.
+
+    Differs from generate() deliberately:
+      - No PERSONA assembly, no post-cleaning. Returns the model's RAW text so
+        the caller can parse it (JSON, a label, whatever). clean_output() would
+        mangle JSON, so it is NOT applied here.
+      - `model` is explicit (default: TRIAGE_MODEL env, else GEN_MODEL, else
+        gemini). Triage wants a FREE model (gemini/groq); post-writing wants
+        anthropic. Keeping the arg explicit stops the two from bleeding into
+        each other.
+      - Low default temperature (classification wants determinism, not flair).
+
+    DRY_RUN or a missing API key returns "" — the caller supplies its own
+    domain-specific deterministic stub (a generic stub can't classify).
+    """
+    model = (model or os.environ.get("TRIAGE_MODEL") or os.environ.get("GEN_MODEL") or "gemini").strip().lower()
+    if model == "claude":
+        model = "anthropic"
+    if model not in ("gemini", "groq", "anthropic"):
+        print(f"[complete] WARNING: unknown model={model!r}, defaulting to gemini")
+        model = "gemini"
+
+    key_env = {"gemini": "GEMINI_API_KEY", "groq": "GROQ_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}[model]
+    api_key = os.environ.get(key_env, "").strip()
+
+    if _is_dry_run() or not api_key:
+        return ""
+
+    last_exc: Optional[Exception] = None
+    attempts = max(1, retries + 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            if model == "gemini":
+                out = _call_gemini(prompt, api_key, temperature=temperature, max_tokens=max_tokens)
+            elif model == "groq":
+                out = _call_groq(prompt, api_key, temperature=temperature, max_tokens=max_tokens)
+            else:  # anthropic
+                out = _call_anthropic(prompt, api_key, temperature=temperature, max_tokens=max_tokens)
+            if out and out.strip():
+                return out.strip()
+            last_exc = GenerationError("model returned empty output")
+        except GenerationError as exc:
+            last_exc = exc
+            print(f"[complete] attempt {attempt}/{attempts} failed: {exc}")
+
+    print(f"[complete] all {attempts} attempt(s) exhausted; last error: {last_exc}")
     return ""

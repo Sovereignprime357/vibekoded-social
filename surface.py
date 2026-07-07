@@ -1,0 +1,211 @@
+"""
+surface.py — the SURFACE step of the agentic loop (SPEC-v2.md).
+
+Takes triage.py's on-mission items and posts each one to Slack for the
+operator's yes/no. This is PLAIN CODE — no model runs here. An HTTP POST out,
+that's it. The "hey, look at this" step costs nothing.
+
+Each surfaced item is formatted so the operator can act from their phone:
+what the post is, who said it, which lane, why it fits, the proposed action,
+a confidence flag, and a tap-through link. The operator does the action
+manually in T1 (tap like / write the reply / repost); autonomy is earned per
+class later (SPEC-v2.md TRUST TIERS).
+
+DRY_RUN: prints the exact Slack payload instead of sending it — this is the
+sample the operator reviews before any key or webhook goes live.
+
+Dedup: scout.py already marks every scanned post as seen, so a post is only
+ever surfaced once. surface.py additionally keeps its own audit log
+(scout-surfaced.jsonl, I-LOGGED) and skips any URI already in it as a belt-
+and-suspenders guard.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from typing import Any, Dict, List, Optional, Set
+
+import requests
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SURFACED_PATH = os.path.join(HERE, "scout-surfaced.jsonl")
+
+ACTION_LABEL = {
+    "like": "👍 LIKE",
+    "reply": "💬 REPLY",
+    "repost": "🔁 REPOST",
+    "follow": "➕ FOLLOW",
+}
+CONFIDENCE_MARK = {"high": "high", "med": "med", "low": "low ⚠️"}
+
+
+def _is_dry_run() -> bool:
+    return os.environ.get("DRY_RUN", "").strip() in ("1", "true", "True", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Formatting (pure, testable)
+# ---------------------------------------------------------------------------
+
+
+def format_item(item: Dict[str, Any]) -> str:
+    """Render one surfaced item as Slack mrkdwn text."""
+    action = str(item.get("action", "")).lower()
+    action_lbl = ACTION_LABEL.get(action, action.upper() or "—")
+    conf = CONFIDENCE_MARK.get(str(item.get("confidence", "low")).lower(), "low ⚠️")
+    lane = item.get("lane_label") or item.get("lane") or ""
+    handle = item.get("author_handle", "")
+    text = str(item.get("text", "")).strip()
+    why = str(item.get("why", "")).strip()
+    url = item.get("url", "")
+
+    # Keep the quoted post from blowing up the message.
+    if len(text) > 400:
+        text = text[:397] + "…"
+
+    lines = [
+        f"*{action_lbl}*  ·  confidence: {conf}  ·  lane: {lane}",
+        f"@{handle}:",
+        f"> {text}",
+    ]
+    if why:
+        lines.append(f"_why:_ {why}")
+    if url:
+        lines.append(f"→ {url}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Surfaced-audit ledger (dedup + I-LOGGED)
+# ---------------------------------------------------------------------------
+
+
+def load_surfaced_uris(path: str = SURFACED_PATH) -> Set[str]:
+    seen: Set[str] = set()
+    if not os.path.exists(path):
+        return seen
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("uri"):
+                        seen.add(rec["uri"])
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return seen
+
+
+def _append_surfaced(item: Dict[str, Any], path: str = SURFACED_PATH) -> None:
+    rec = {
+        "uri": item.get("uri"),
+        "author_handle": item.get("author_handle"),
+        "lane_id": item.get("lane_id"),
+        "action": item.get("action"),
+        "confidence": item.get("confidence"),
+        "why": item.get("why"),
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Slack transport
+# ---------------------------------------------------------------------------
+
+
+def _post_slack(text: str, webhook_url: str, timeout: int = 15) -> bool:
+    """Best-effort POST to a Slack incoming webhook. Returns success; never raises."""
+    try:
+        resp = requests.post(webhook_url, json={"text": text}, timeout=timeout)
+        if resp.status_code >= 400:
+            print(f"[surface] Slack POST failed: HTTP {resp.status_code} {resp.text[:120]}")
+            return False
+        return True
+    except requests.RequestException as exc:
+        print(f"[surface] Slack POST error (non-fatal): {exc}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def surface_all(
+    items: List[Dict[str, Any]],
+    webhook_url: Optional[str] = None,
+    dry_run: Optional[bool] = None,
+    surfaced_path: Optional[str] = None,
+) -> int:
+    """
+    Surface each item to Slack (or print in DRY_RUN). Skips any URI already in
+    the audit ledger. Returns the number of items actually surfaced this call.
+
+    surfaced_path resolves at CALL time (default: the module SURFACED_PATH) and
+    is threaded explicitly into the ledger helpers — never relying on their
+    def-time default args, so the ledger the dedup-check reads is always the
+    same one the append writes to.
+    """
+    if not items:
+        print("[surface] nothing to surface")
+        return 0
+
+    dry_run = _is_dry_run() if dry_run is None else dry_run
+    webhook_url = webhook_url if webhook_url is not None else os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+    surfaced_path = surfaced_path or SURFACED_PATH
+    already = load_surfaced_uris(surfaced_path)
+
+    count = 0
+    for item in items:
+        uri = item.get("uri")
+        if uri and uri in already:
+            continue
+
+        text = format_item(item)
+
+        if dry_run:
+            print("---- [DRY_RUN] would surface to Slack ----")
+            print(text)
+        elif not webhook_url:
+            # No webhook configured but not dry-run: print + still log so we
+            # don't silently drop, and the operator sees it in the run output.
+            print("[surface] SLACK_WEBHOOK_URL not set; printing instead:")
+            print(text)
+        else:
+            _post_slack(text, webhook_url)
+
+        # Dry-run is side-effect-free: no ledger write, so the operator can
+        # re-run the preview as many times as they like without "consuming"
+        # posts (scout also skips state/seen persistence in dry-run).
+        if not dry_run:
+            _append_surfaced(item, surfaced_path)
+        if uri:
+            already.add(uri)
+        count += 1
+
+    print(f"[surface] surfaced {count} item(s)" + (" (dry-run)" if dry_run else ""))
+    return count
+
+
+if __name__ == "__main__":
+    demo = [{
+        "uri": "at://x/app.bsky.feed.post/1",
+        "author_handle": "someone.bsky.social",
+        "text": "how is everyone handling agents losing all context between sessions?",
+        "lane_id": "memory",
+        "lane_label": "Agent memory / context engineering",
+        "action": "reply",
+        "confidence": "high",
+        "why": "our exact wheelhouse — flat-file+index answer, ask what they run",
+        "url": "https://bsky.app/profile/someone.bsky.social/post/1",
+    }]
+    surface_all(demo, dry_run=True)

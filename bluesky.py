@@ -31,6 +31,7 @@ CREATE_SESSION_EP = f"{BASE_URL}/com.atproto.server.createSession"
 REFRESH_SESSION_EP = f"{BASE_URL}/com.atproto.server.refreshSession"
 CREATE_RECORD_EP = f"{BASE_URL}/com.atproto.repo.createRecord"
 LIST_NOTIFICATIONS_EP = f"{BASE_URL}/app.bsky.notification.listNotifications"
+SEARCH_POSTS_EP = f"{BASE_URL}/app.bsky.feed.searchPosts"
 
 
 class BlueskyError(Exception):
@@ -287,4 +288,64 @@ def get_post_thread(uri: str, session: Optional[Dict[str, Any]] = None, depth: i
     """
     session = session or create_session()
     url = f"{BASE_URL}/app.bsky.feed.getPostThread?uri={urllib.parse.quote(uri, safe=':/')}&depth={int(depth)}"
+    return _request("GET", url, headers=_auth_headers(session))
+
+
+# ---------------------------------------------------------------------------
+# Search (the SEE step's eyes — read-only, no writes, cheap)
+# ---------------------------------------------------------------------------
+
+
+def search_posts(
+    q: str,
+    session: Optional[Dict[str, Any]] = None,
+    limit: int = 25,
+    sort: str = "latest",
+    lang: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    cursor: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Wraps app.bsky.feed.searchPosts — the scout's discovery primitive.
+
+    This is a READ. Reads don't cost write-points; the only ceiling is the
+    per-IP HTTP budget (3000 req / 5 min), which an hourly scan never
+    approaches. Authenticated (bsky.social proxies app.bsky.* reads to the
+    appview using the session's Bearer token).
+
+    Params mirror the endpoint:
+      q      — required query string (supports Bluesky search operators).
+      sort   — "latest" (chronological, default here) or "top" (engagement).
+      lang   — BCP-47 code, e.g. "en" (filters by detected post language).
+      since  — ISO date / datetime; only posts AT OR AFTER this (inclusive).
+               This is the incremental-scan lever: pass the last scan time so
+               each run only sees new posts, never re-chewing the feed.
+      until  — ISO date / datetime; only posts BEFORE this (exclusive).
+      tags   — list of hashtags (no '#'); multiple = AND match.
+      cursor — pagination cursor from a prior response.
+
+    Returns the raw response dict: {"posts": [...], "cursor": <optional>}.
+    Candidate shaping / dedup / own-account filtering is scout.py's job — this
+    stays a thin transport wrapper, consistent with the rest of this module.
+    """
+    session = session or create_session()
+
+    params: List[tuple] = [("q", q), ("limit", str(int(limit)))]
+    if sort:
+        params.append(("sort", sort))
+    if lang:
+        params.append(("lang", lang))
+    if since:
+        params.append(("since", since))
+    if until:
+        params.append(("until", until))
+    if cursor:
+        params.append(("cursor", cursor))
+    for t in tags or []:
+        # tag is a repeatable query param (AND-matched by the server).
+        params.append(("tag", t))
+
+    url = f"{SEARCH_POSTS_EP}?{urllib.parse.urlencode(params)}"
     return _request("GET", url, headers=_auth_headers(session))
