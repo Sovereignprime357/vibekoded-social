@@ -1,0 +1,65 @@
+name: notify-tick
+
+# Polls Bluesky notifications every ~20 min per SPEC.md ARCHITECTURE.
+# Classifies each new reply/mention: our own shared-account co-pilot gets
+# an auto-posted in-voice banter reply; a stranger gets a DRAFT written to
+# drafts.jsonl for operator approval (I-GATED-REPLIES — no autonomous
+# public replies to strangers in v1).
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
+
+# Same rationale as post.yml: serialize runs so two ticks never race on the
+# commit-back push, and never kill a run that may already have posted a
+# banter reply to Bluesky before its state got logged.
+concurrency:
+  group: vibekoded-social-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run banter (notification poll)
+        env:
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          GEN_MODEL: ${{ vars.GEN_MODEL || 'gemini' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          DRY_RUN: ${{ vars.DRY_RUN || '0' }}
+        run: python banter.py
+
+      - name: Commit updated state files
+        # banter.py mutates handled.jsonl (dedup ledger), and may append to
+        # drafts.jsonl (stranger replies awaiting approval) or posted.jsonl
+        # is NOT touched here (banter replies aren't scheduled-drip posts,
+        # they're tracked via handled.jsonl's own posted/drafted status).
+        run: |
+          git config user.name "vibekoded-social-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add handled.jsonl drafts.jsonl skipped.jsonl
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "chore(notify-tick): update notification state [skip ci]"
+            git pull --rebase origin HEAD
+            git push
+          fi

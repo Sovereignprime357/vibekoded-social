@@ -1,0 +1,351 @@
+"""
+generate.py — model-agnostic post generation.
+
+Reads PERSONA.md for voice rules + forbidden list + example posts, combines
+it with a queue entry, and asks a generation model (Gemini or Groq, picked
+by GEN_MODEL env var) to write the post. Cleans the raw model output before
+handing it back (strip quotes/labels, collapse whitespace, enforce the
+300-char cap).
+
+DRY_RUN contract (load-bearing for testing without credentials):
+  If DRY_RUN=1 (env) OR the relevant API key is missing, generate() returns
+  a deterministic stub built from the queue entry — no network call is made
+  at all. This lets guard.py, content_queue.py, and post_tick.py be exercised
+  end-to-end with zero credentials.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from typing import Any, Dict, Optional
+
+import requests
+
+MAX_POST_LENGTH = 300
+
+PERSONA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PERSONA.md")
+
+GEMINI_ENDPOINT = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent"
+)
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+ANTHROPIC_VERSION = "2023-06-01"
+
+
+class GenerationError(Exception):
+    """Raised when a live model call fails after retries. Never raised in DRY_RUN."""
+
+
+# ---------------------------------------------------------------------------
+# Persona / prompt assembly
+# ---------------------------------------------------------------------------
+
+_persona_cache: Optional[str] = None
+
+
+def _load_persona() -> str:
+    """
+    Read PERSONA.md verbatim. Cached in-process (this module is invoked as
+    a short-lived script, so the cache mostly just avoids double reads
+    within a single run, e.g. banter.py calling generate() twice).
+    """
+    global _persona_cache
+    if _persona_cache is not None:
+        return _persona_cache
+
+    if not os.path.exists(PERSONA_PATH):
+        # Fail loud, not closed here — a missing PERSONA.md is a build error,
+        # not a runtime privacy concern, so we don't fail-silent this one.
+        raise FileNotFoundError(
+            f"PERSONA.md not found at {PERSONA_PATH}. generate() cannot build "
+            "a voice-accurate prompt without it."
+        )
+
+    with open(PERSONA_PATH, "r", encoding="utf-8") as f:
+        _persona_cache = f.read()
+    return _persona_cache
+
+
+def build_prompt(entry: Dict[str, Any], kind: str = "post") -> str:
+    """
+    Build the full generation prompt from PERSONA.md + a queue entry (or,
+    for banter.py, a notification-derived pseudo-entry with the same shape:
+    at minimum a `raw` field describing what happened / what was said).
+
+    kind:
+      "post"   — a build-in-public post from a content-queue entry.
+      "banter" — an in-voice reply to our own co-pilot account.
+      "draft_reply" — a reply draft for a stranger (operator reviews before
+                      sending; still generated in-voice).
+    """
+    persona = _load_persona()
+
+    raw = str(entry.get("raw", "")).strip()
+    angle = str(entry.get("angle", "")).strip()
+    entry_type = str(entry.get("type", "moment")).strip()
+
+    if kind == "post":
+        task = (
+            f"Write ONE Bluesky post for the shared-account voice described above.\n\n"
+            f"Source material (type: {entry_type}):\n{raw}\n"
+        )
+        if angle:
+            task += f"\nSuggested angle (use it if it fits, ignore if it doesn't): {angle}\n"
+        task += (
+            "\nRules for THIS output:\n"
+            "- Ground it in the source material above. Do not invent details not present in it.\n"
+            f"- Hard limit: {MAX_POST_LENGTH} characters, ideally much shorter (1-2 lines).\n"
+            "- Output ONLY the post text. No quotation marks around it, no \"Post:\" label, "
+            "no explanation, no markdown.\n"
+            "- Never use real personal names or family references (see FORBIDDEN section above) "
+            "under any circumstance.\n"
+        )
+    elif kind == "banter":
+        task = (
+            f"The human co-pilot on this shared account just posted this in our thread:\n"
+            f"\"{raw}\"\n\n"
+            "Write ONE short in-voice AI-side reply (the AI half of the two-hander). "
+            "Deadpan, quietly amused, riff off him — do not repeat what he said.\n"
+            f"Hard limit: {MAX_POST_LENGTH} characters.\n"
+            "Output ONLY the reply text, no quotes, no label, no explanation."
+        )
+    elif kind == "draft_reply":
+        task = (
+            f"A stranger replied to one of our posts with this:\n\"{raw}\"\n\n"
+            "Draft ONE short in-voice reply for OPERATOR REVIEW (this will NOT be posted "
+            "automatically — a human approves it first). Stay in voice, substance first, "
+            "no hard-sell.\n"
+            f"Hard limit: {MAX_POST_LENGTH} characters.\n"
+            "Output ONLY the draft reply text, no quotes, no label, no explanation."
+        )
+    else:
+        raise ValueError(f"unknown kind {kind!r}")
+
+    return f"{persona}\n\n---\n\nTASK\n\n{task}"
+
+
+# ---------------------------------------------------------------------------
+# Output cleaning
+# ---------------------------------------------------------------------------
+
+_LABEL_PREFIX_RE = re.compile(
+    r"^\s*(post|reply|draft|output|text)\s*:\s*", re.IGNORECASE
+)
+_WRAPPING_QUOTES_RE = re.compile(r'^[\s"\'“”‘’`]+|[\s"\'“”‘’`]+$')
+
+
+def clean_output(raw_text: str) -> str:
+    """
+    Normalize raw model output into something postable:
+      - strip a leading "Post:" / "Reply:" style label if the model added one
+      - strip wrapping quote characters (straight and curly)
+      - collapse internal whitespace runs (but keep intentional newlines
+        that separate the two-hander's lines) down to single blank-line-free
+        text — Bluesky posts in this voice are 1-3 short lines, not prose
+        blocks, so we collapse multiple blank lines to at most one newline
+      - hard-truncate to MAX_POST_LENGTH on a word boundary where possible
+    """
+    if raw_text is None:
+        return ""
+
+    text = str(raw_text).strip()
+
+    # Strip a leading label like "Post:" if present.
+    text = _LABEL_PREFIX_RE.sub("", text)
+
+    # Strip wrapping quote characters (repeatedly, in case of ("'..'")).
+    prev = None
+    while prev != text:
+        prev = text
+        text = _WRAPPING_QUOTES_RE.sub("", text)
+
+    # Collapse whitespace: multiple blank lines -> single newline; runs of
+    # spaces/tabs -> single space. Preserve single newlines (the voice uses
+    # short multi-line posts, e.g. the "him: / me:" pattern in PERSONA.md).
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    text = text.strip()
+
+    if len(text) > MAX_POST_LENGTH:
+        truncated = text[:MAX_POST_LENGTH]
+        # Prefer to cut on a word boundary rather than mid-word.
+        last_space = truncated.rfind(" ")
+        if last_space > MAX_POST_LENGTH * 0.6:  # don't over-truncate short posts
+            truncated = truncated[:last_space]
+        text = truncated.rstrip()
+
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Deterministic stub (DRY_RUN / no-credentials path)
+# ---------------------------------------------------------------------------
+
+
+def _stub_output(entry: Dict[str, Any], kind: str) -> str:
+    """
+    Deterministic, credential-free stand-in for a model call. Deliberately
+    NOT randomized — the same entry always produces the same stub, which
+    makes DRY_RUN runs diffable and test assertions stable.
+    """
+    raw = str(entry.get("raw", "")).strip()
+    entry_type = str(entry.get("type", "moment")).strip()
+
+    if kind == "post":
+        stub = f"[DRY_RUN STUB:{entry_type}] {raw}"
+    elif kind == "banter":
+        stub = f"[DRY_RUN STUB:banter] noted. he said: {raw}"
+    elif kind == "draft_reply":
+        stub = f"[DRY_RUN STUB:draft_reply] re: {raw}"
+    else:
+        stub = f"[DRY_RUN STUB] {raw}"
+
+    return clean_output(stub)
+
+
+# ---------------------------------------------------------------------------
+# Live model calls
+# ---------------------------------------------------------------------------
+
+
+def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        raise GenerationError(f"network error calling {url}: {exc}") from exc
+
+    if resp.status_code >= 400:
+        raise GenerationError(f"HTTP {resp.status_code} from {url}: {resp.text}")
+
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise GenerationError(f"non-JSON response from {url}: {resp.text[:200]!r}") from exc
+
+
+def _call_gemini(prompt: str, api_key: str) -> str:
+    url = f"{GEMINI_ENDPOINT}?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.9,
+            "maxOutputTokens": 200,
+        },
+    }
+    result = _post_json(url, {"Content-Type": "application/json"}, payload)
+    try:
+        candidates = result["candidates"]
+        parts = candidates[0]["content"]["parts"]
+        return "".join(p.get("text", "") for p in parts)
+    except (KeyError, IndexError, TypeError) as exc:
+        raise GenerationError(f"unexpected Gemini response shape: {result!r}") from exc
+
+
+def _call_groq(prompt: str, api_key: str) -> str:
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.9,
+        "max_tokens": 200,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    result = _post_json(GROQ_ENDPOINT, headers, payload)
+    try:
+        return result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise GenerationError(f"unexpected Groq response shape: {result!r}") from exc
+
+
+def _call_anthropic(prompt: str, api_key: str) -> str:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 300,
+        "temperature": 0.9,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": ANTHROPIC_VERSION,
+    }
+    result = _post_json(ANTHROPIC_ENDPOINT, headers, payload)
+    try:
+        blocks = result["content"]
+        return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise GenerationError(f"unexpected Anthropic response shape: {result!r}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Public entrypoint
+# ---------------------------------------------------------------------------
+
+
+def _is_dry_run() -> bool:
+    return os.environ.get("DRY_RUN", "").strip() in ("1", "true", "True", "yes")
+
+
+def generate(entry: Dict[str, Any], kind: str = "post", retries: int = 2) -> str:
+    """
+    Generate one piece of text for `entry` (a queue entry, or a
+    notification-derived dict with at least a `raw` key).
+
+    Returns cleaned, length-enforced text. Never returns raw/unclean model
+    output. Does NOT run the privacy guard — that's guard.py's job, called
+    by the entrypoint scripts (post_tick.py / banter.py) after generation.
+
+    DRY_RUN path: triggered by DRY_RUN env var OR a missing API key for the
+    selected model. No network call is made in that path.
+    """
+    model = os.environ.get("GEN_MODEL", "anthropic").strip().lower()
+    if model == "claude":
+        model = "anthropic"
+    if model not in ("gemini", "groq", "anthropic"):
+        print(f"[generate] WARNING: unknown GEN_MODEL={model!r}, defaulting to anthropic")
+        model = "anthropic"
+
+    if model == "gemini":
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    elif model == "groq":
+        api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    else:  # anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+    if _is_dry_run() or not api_key:
+        return _stub_output(entry, kind)
+
+    prompt = build_prompt(entry, kind=kind)
+
+    last_exc: Optional[Exception] = None
+    attempts = max(1, retries + 1)
+    for attempt in range(1, attempts + 1):
+        try:
+            if model == "gemini":
+                raw_output = _call_gemini(prompt, api_key)
+            elif model == "groq":
+                raw_output = _call_groq(prompt, api_key)
+            else:  # anthropic
+                raw_output = _call_anthropic(prompt, api_key)
+            cleaned = clean_output(raw_output)
+            if cleaned:
+                return cleaned
+            last_exc = GenerationError("model returned empty output after cleaning")
+        except GenerationError as exc:
+            last_exc = exc
+            print(f"[generate] attempt {attempt}/{attempts} failed: {exc}")
+
+    # Every retry failed. Fail closed here too: return empty string rather
+    # than raising all the way up, so the entrypoint's "if not text: skip"
+    # path handles it uniformly with a guard failure. Callers that need to
+    # distinguish "generation failed" from "guard blocked" can check for "".
+    print(f"[generate] all {attempts} attempt(s) exhausted; last error: {last_exc}")
+    return ""

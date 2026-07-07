@@ -1,0 +1,43 @@
+# --- Secrets — never commit ------------------------------------------------
+.env
+.env.local
+*.env
+!.env.example
+
+# Cached Bluesky session (contains live JWTs)
+.session.json
+
+# --- State files: INTENTIONALLY NOT IGNORED -------------------------------
+# content-queue.jsonl, posted.jsonl, skipped.jsonl, handled.jsonl, and
+# drafts.jsonl are all TRACKED in git, not ignored. GitHub Actions runners
+# are ephemeral — every scheduled run starts from a fresh checkout of the
+# last COMMIT, so any state that only lives on runner-local disk (marking a
+# queue entry used, recording a post happened, deduping a notification id)
+# evaporates unless the workflow commits it back to the repo before exit.
+# posted.jsonl in particular is the ONLY record a post happened at all — if
+# it were gitignored, the next run would have no way to know not to repost.
+# See .github/workflows/post.yml and notify.yml for the commit-back step.
+#
+# Do NOT add these five files to this .gitignore.
+
+# --- Python ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+dist/
+build/
+
+# --- Editor / OS ---------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

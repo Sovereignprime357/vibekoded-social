@@ -1,0 +1,84 @@
+name: post-tick
+
+# SPEC.md: "randomized windows, ~3-5 posts/day". Cron itself can't randomize
+# a time, so this fires at fixed-ish UTC hours spread across the day; the
+# "randomized" part of the SPEC is satisfied by post_tick.py picking WHICH
+# queue entry to use (FIFO-unused) and by not every scheduled tick actually
+# posting (skips cleanly when the queue is empty or the guard blocks) —
+# true within-window jitter is a nice-to-have for a later pass, not a v1
+# blocker (nothing in I-* requires literal randomized minutes).
+on:
+  schedule:
+    # 5 fixed UTC ticks/day. Each tick posts AT MOST one entry (post_tick.py
+    # is post-once-and-exit) so actual cadence is bounded by queue supply,
+    # not by this schedule — an empty queue means a tick that does nothing.
+    - cron: "17 13 * * *"  # ~morning US / midday UTC
+    - cron: "42 16 * * *"
+    - cron: "9 19 * * *"
+    - cron: "31 22 * * *"
+    - cron: "53 2 * * *"   # late-night US
+  workflow_dispatch: {}     # manual trigger from the Actions tab, any time
+
+# Prevent two ticks from racing on the same commit-back push (e.g. a manual
+# dispatch firing while a scheduled run is still in flight). Runs queue
+# instead of overlapping; cancel-in-progress is deliberately false so a
+# tick already mid-flight (which may have already posted to Bluesky) is
+# never killed partway through — that would risk a post with no log entry.
+concurrency:
+  group: vibekoded-social-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # required to commit the updated state files back
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history isn't needed; but ensure we're on the
+          # latest commit even if a prior queued run just pushed.
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run post_tick
+        env:
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          GEN_MODEL: ${{ vars.GEN_MODEL || 'gemini' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # DRY_RUN is a repo VARIABLE (not secret) so it's easy to flip
+          # from the Actions UI without touching secrets. Defaults to "0"
+          # (live) — set the repo variable DRY_RUN=1 to pause live posting
+          # without editing this file.
+          DRY_RUN: ${{ vars.DRY_RUN || '0' }}
+        run: python post_tick.py
+
+      - name: Commit updated state files
+        # post_tick.py mutates content-queue.jsonl (marks an entry used),
+        # posted.jsonl, and/or skipped.jsonl, and may refresh .session.json
+        # (which is gitignored on purpose — it's live-session secrets, not
+        # state we want in history; each run either reuses the cache from
+        # this checkout or re-logs in, either way it doesn't need to persist
+        # via git). Only the JSONL state files are committed back.
+        run: |
+          git config user.name "vibekoded-social-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add content-queue.jsonl posted.jsonl skipped.jsonl
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "chore(post-tick): update queue/post state [skip ci]"
+            git pull --rebase origin HEAD
+            git push
+          fi
