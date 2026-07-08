@@ -20,11 +20,21 @@ on:
   # per-tick cap + pacing so a mis-approval can never burst. See act.py /
   # act_tick.py and tests/test_act_tick.py.
   schedule:
-    - cron: "*/5 * * * *"    # every 5 min, so the approval queue drains continuously
+    - cron: "*/5 * * * *"    # best-effort fallback; GitHub cron lags badly (see SPEC-v4)
   workflow_dispatch: {}     # run on demand from the Actions tab
+  # EVENT TRIGGER (SPEC-v4): a Slack 👍 → Vercel webhook → repository_dispatch
+  # fires this tick in seconds, killing the dependency on the unreliable cron.
+  # I-TRIGGER-NOT-ACTION: this only WAKES act_tick; every gate inside act_tick
+  # (operator-👍 match, caps, pacing, self-label, guard, I-NO-SELF) still runs —
+  # a spoofed/invalid trigger can at worst waste a run, never act.
+  repository_dispatch:
+    types: [slack-thumbsup]
 
 # Never let two ticks race on the act-log commit-back, and don't cancel a tick
-# mid-flight (it may have already executed an action and needs to log it).
+# mid-flight (it may have already executed an action and needs to log it). This
+# matters MORE under the event trigger: a 👍-storm/Slack-retry can fire several
+# dispatches at once — they QUEUE here (serial) and act-log dedup makes the
+# repeats no-ops, so concurrent triggers never double-act or corrupt the ledger.
 concurrency:
   group: vibekoded-social-act-state
   cancel-in-progress: false
