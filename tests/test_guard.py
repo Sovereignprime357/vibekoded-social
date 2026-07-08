@@ -264,12 +264,14 @@ def test_extra_terms_are_loaded_and_enforced(monkeypatch):
 
 
 def test_guard_extra_terms_env_enforced(monkeypatch):
+    # SYNTHETIC fixtures only — never the real client terms (those live solely in
+    # the GUARD_EXTRA_TERMS secret / gitignored file, never in this public repo).
     # Comma- and newline-separated, with a comment line that must be ignored.
-    monkeypatch.setenv("GUARD_EXTRA_TERMS", "asphalt solutions, bob\n# a comment\njustin")
-    ok, _ = guard.check("we finished the asphalt solutions dashboard")
+    monkeypatch.setenv("GUARD_EXTRA_TERMS", "acme corp, zephyr\n# a comment\nwidgetco")
+    ok, _ = guard.check("we finished the acme corp dashboard")
     assert ok is False, "multi-word client term from GUARD_EXTRA_TERMS not enforced"
-    assert guard.check("shipped it for bob today")[0] is False
-    assert guard.check("justin signed off")[0] is False
+    assert guard.check("shipped it for zephyr today")[0] is False
+    assert guard.check("widgetco signed off")[0] is False
     # The comment line must not turn into a matchable term.
     assert guard.check("a comment about clean code")[0] is True
 

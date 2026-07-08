@@ -56,6 +56,11 @@ jobs:
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
           GEN_MODEL: anthropic
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # I-PRIVACY: the client/project-confidential extra terms for guard.py.
+          # This is the PRIMARY posting path — it MUST carry the same secret as
+          # notify.yml and scout-act.yml, or brain-fed posts ship unprotected.
+          # Set it with: gh secret set GUARD_EXTRA_TERMS
+          GUARD_EXTRA_TERMS: ${{ secrets.GUARD_EXTRA_TERMS }}
           # DRY_RUN is a repo VARIABLE (not secret) so it's easy to flip
           # from the Actions UI without touching secrets. Defaults to "0"
           # (live) — set the repo variable DRY_RUN=1 to pause live posting
