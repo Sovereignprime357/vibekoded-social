@@ -32,10 +32,13 @@ MISSION_PATH = os.path.join(HERE, "MISSION-FILTER.md")
 VALID_ACTIONS = {"like", "reply", "repost", "follow", "none"}
 VALID_CONFIDENCE = {"high", "med", "low"}
 
-# Triage wants a free model + determinism, distinct from the anthropic
-# post-writer. TRIAGE_MODEL overrides; default GROQ — Gemini's free tier is
-# 20 requests/day (useless for a scanner), Groq's free tier is generous.
-TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "groq")
+# Triage wants determinism + reliable structured JSON. Default ANTHROPIC (Haiku):
+# the free models proved unusable for a scanner — Gemini's free tier is 20 req/day,
+# and Groq's gpt-oss-120b burns its budget on hidden reasoning (empty output) while
+# the 8k tokens/minute cap 429s us. Haiku doesn't reason-bloat and has no free-tier
+# TPM wall; batching (rubric once per batch) keeps it ~$2/mo. TRIAGE_MODEL overrides
+# back to gemini|groq if ever needed.
+TRIAGE_MODEL = os.environ.get("TRIAGE_MODEL", "anthropic")
 
 # Batch size for classification. The rubric (~1.8k tokens) is the expensive part
 # of a triage prompt; sending it ONCE per batch of N posts instead of once PER
