@@ -72,10 +72,11 @@ jobs:
           ACT_CAP_LIKE: ${{ vars.ACT_CAP_LIKE || '20' }}
           ACT_CAP_REPOST: ${{ vars.ACT_CAP_REPOST || '10' }}
           ACT_CAP_FOLLOW: ${{ vars.ACT_CAP_FOLLOW || '10' }}
-          ACT_CAP_REPLY: ${{ vars.ACT_CAP_REPLY || '5' }}
-          # Burst protection (independent of the daily caps).
-          ACT_PACING_SECONDS: ${{ vars.ACT_PACING_SECONDS || '60' }}
-          ACT_MAX_PER_TICK: ${{ vars.ACT_MAX_PER_TICK || '3' }}
+          ACT_CAP_REPLY: ${{ vars.ACT_CAP_REPLY || '20' }}
+          # Burst protection (independent of the daily caps). Defaults aligned so a
+          # (cron-lagged) run drains a real batch: ~10 actions × 20s ≈ a 3-min run.
+          ACT_PACING_SECONDS: ${{ vars.ACT_PACING_SECONDS || '20' }}
+          ACT_MAX_PER_TICK: ${{ vars.ACT_MAX_PER_TICK || '10' }}
           # Earn-it ladder: which conversation reply-back CLASSES may post WITHOUT
           # a 👍 (autonomous). Default OFF -> everything human-gated. Set e.g.
           # "appreciation" or "all" ONLY once a class has proven out.
