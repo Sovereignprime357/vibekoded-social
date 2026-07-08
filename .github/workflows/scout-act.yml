@@ -20,7 +20,7 @@ on:
   # per-tick cap + pacing so a mis-approval can never burst. See act.py /
   # act_tick.py and tests/test_act_tick.py.
   schedule:
-    - cron: "*/15 * * * *"   # every 15 min, so an operator 👍 is acted on within ~15 min
+    - cron: "*/5 * * * *"    # every 5 min, so the approval queue drains continuously
   workflow_dispatch: {}     # run on demand from the Actions tab
 
 # Never let two ticks race on the act-log commit-back, and don't cancel a tick
