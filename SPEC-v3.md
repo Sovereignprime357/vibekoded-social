@@ -27,7 +27,7 @@ soft-funneling to vibekoded.com. Showing real builds and asking for real help ar
 magnets a meta-bit-on-loop can never be.
 
 ## INPUTS
-- **The BRAIN** — `Claude's Mind` + project files: real projects (ASE Detect, products, this
+- **The BRAIN** — `Claude's Mind` + project files: real projects (client work, products, this
   bot), shipped work, wins, lessons, OPEN PROBLEMS / NEEDS, dreaming-pass insights. Source of
   truth for all content. Every draw passes the privacy guard before it can become a post.
 - **Scout candidates** — on-mission Bluesky posts from SPEC-v2's SEE/TRIAGE (targets to
@@ -45,10 +45,11 @@ magnets a meta-bit-on-loop can never be.
 ## INVARIANTS
 - **I-PRIVACY (extended, critical)** — the guard runs on EVERY generated post/reply/DM and
   fails closed. The term list covers personal names + family (Sovereign/Shayler/Phipps/
-  daughter/wife/etc.) AND **client/project-confidential terms** (e.g. Asphalt Solutions,
-  Bob, Justin, and any client the brain names). The brain holds confidential material; a
-  showcase post must never leak a client identity. If a post can't be made public-safe, it
-  is dropped, not sanitized-and-hoped.
+  daughter/wife/etc.) AND **client/project-confidential terms** — the client names,
+  people, and project code-names the brain holds. Those terms are NEVER named in this
+  public repo; they load at runtime only from the `GUARD_EXTRA_TERMS` secret / gitignored
+  file. The brain holds confidential material; a showcase post must never leak a client
+  identity. If a post can't be made public-safe, it is dropped, not sanitized-and-hoped.
 - **I-BRAND-VOICE** — brand-first (VibeKoded / "the operator"), no real names, no vendor
   names in public chrome. Bragging on the operator is done as "the operator" / the builder
   behind this, never the personal name.

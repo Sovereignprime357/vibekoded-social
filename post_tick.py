@@ -5,7 +5,7 @@ Invoked by .github/workflows/post.yml on a cron (a few times/day). Also
 runnable manually: `python post_tick.py`.
 
 Flow (per SPEC.md ARCHITECTURE):
-  get_next_unused -> generate -> guard.check
+  get_next_rotated -> generate -> guard.check
     -> if guard fails: SKIP, log to skipped.jsonl, do NOT post
     -> if guard passes: post to Bluesky -> mark_used -> log to posted.jsonl
 
