@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import act  # noqa: E402
 import act_tick  # noqa: E402
+import surface  # noqa: E402
 
 
 def _surfaced(uri, ts, action="reply"):
@@ -46,6 +47,10 @@ def _wire(monkeypatch, tmp_path, items, reacted_ts, *, operator="U_OP",
     monkeypatch.setattr(act_tick, "load_actionable", lambda path=None: list(items))
     monkeypatch.setattr(act_tick, "load_acted", lambda path=None: (set(), {}))
     monkeypatch.setattr(act_tick, "bluesky_session", lambda: {"did": "did:plc:us"})
+    # Self-label ensure-step (safety basis) — stub so no network; report set.
+    monkeypatch.setattr(act_tick.bluesky, "ensure_bot_label", lambda session: {"status": "already_set"})
+    # Auto-follow digest transport — stub so no Slack call in the default harness.
+    monkeypatch.setattr(surface, "_post_slack_web", lambda text, token, channel, timeout=15: "1.0")
 
     # Only messages whose ts is in reacted_ts carry the operator's 👍.
     def fake_reactions(channel, ts, token, timeout=15):
@@ -147,15 +152,28 @@ def test_auto_reply_classes_parsing(monkeypatch):
     assert act.load_auto_reply_classes() == {"appreciation", "question"}
 
 
-def test_auto_eligible_only_converse_and_allowlisted():
-    # Scout actions NEVER graduate, even with "*".
-    assert act.auto_eligible({"source": "scout", "reply_class": "question"}, {"*"}) is False
-    # Converse item, class allowlisted -> eligible.
-    assert act.auto_eligible({"source": "converse", "reply_class": "appreciation"}, {"appreciation"}) is True
-    # Converse item, class NOT allowlisted -> not eligible.
-    assert act.auto_eligible({"source": "converse", "reply_class": "question"}, {"appreciation"}) is False
-    # Empty allowlist (default) -> nothing eligible.
-    assert act.auto_eligible({"source": "converse", "reply_class": "question"}, set()) is False
+def test_auto_act_classes_default_is_follow(monkeypatch):
+    monkeypatch.delenv("AUTO_ACT_CLASSES", raising=False)
+    assert act.load_auto_act_classes() == {"follow"}   # FOLLOW graduated
+    monkeypatch.setenv("AUTO_ACT_CLASSES", "off")
+    assert act.load_auto_act_classes() == set()
+    monkeypatch.setenv("AUTO_ACT_CLASSES", "follow, like")
+    assert act.load_auto_act_classes() == {"follow", "like"}
+
+
+def test_auto_eligible_follow_autonomous_others_gated():
+    ACT = {"follow"}          # the shipped default
+    NO_REPLY = set()          # AUTO_REPLY_BACK off
+    # FOLLOW graduated -> autonomous.
+    assert act.auto_eligible({"action": "follow"}, ACT, NO_REPLY) is True
+    # like / repost stay gated under the default map.
+    assert act.auto_eligible({"action": "like"}, ACT, NO_REPLY) is False
+    assert act.auto_eligible({"action": "repost"}, ACT, NO_REPLY) is False
+    # scout reply never graduates; converse reply only via AUTO_REPLY_BACK.
+    assert act.auto_eligible({"action": "reply", "source": "scout"}, ACT, {"*"}) is False
+    assert act.auto_eligible({"action": "reply", "source": "converse", "reply_class": "appreciation"}, ACT, {"appreciation"}) is True
+    # like graduates only if explicitly added to the act map.
+    assert act.auto_eligible({"action": "like"}, {"follow", "like"}, NO_REPLY) is True
 
 
 def test_auto_reply_back_posts_converse_without_thumbsup(monkeypatch, tmp_path):
@@ -185,3 +203,42 @@ def test_default_no_auto_nothing_fires_without_thumbsup(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_REPLY_BACK", "off")  # default
     act_tick.run_tick()
     assert executed == []  # gated: no 👍, no auto -> nothing
+
+
+# --- FOLLOW graduated to autonomous (SPEC-v3) -------------------------------
+
+def test_follow_auto_executes_without_thumbsup_and_digests(monkeypatch, tmp_path):
+    items = [
+        {"uri": "f1", "cid": "c1", "author_did": "did:plc:a", "author_handle": "alice.bsky.social",
+         "action": "follow", "text": "x", "slack_ts": "1.0", "slack_channel": "C1", "source": "scout"},
+        # A like is NOT autonomous under the default map -> stays gated, un-👍'd -> skipped.
+        {"uri": "l1", "cid": "c2", "author_did": "did:plc:b", "author_handle": "bob.bsky.social",
+         "action": "like", "text": "y", "slack_ts": "2.0", "slack_channel": "C1", "source": "scout"},
+    ]
+    executed, _ = _wire(monkeypatch, tmp_path, items, reacted_ts=set())  # nothing 👍'd
+    monkeypatch.delenv("AUTO_ACT_CLASSES", raising=False)  # default {"follow"}
+    # Capture the FYI digest.
+    posts = []
+    monkeypatch.setattr(surface, "_post_slack_web", lambda text, token, channel, timeout=15: posts.append(text) or "1.0")
+
+    act_tick.run_tick()
+    assert executed == ["f1"]                      # follow auto-executed; like NOT
+    assert any("auto-followed" in p and "alice.bsky.social" in p for p in posts)  # digest posted
+
+
+def test_follow_autonomy_disabled_when_self_label_unconfirmed(monkeypatch, tmp_path):
+    # Fail-closed: if the bot self-label can't be confirmed, autonomy is OFF this
+    # tick -> the un-👍'd follow does NOT fire.
+    items = [
+        {"uri": "f1", "cid": "c1", "author_did": "did:plc:a", "author_handle": "alice.bsky.social",
+         "action": "follow", "text": "x", "slack_ts": "1.0", "slack_channel": "C1", "source": "scout"},
+    ]
+    executed, _ = _wire(monkeypatch, tmp_path, items, reacted_ts=set())
+    monkeypatch.delenv("AUTO_ACT_CLASSES", raising=False)  # default {"follow"}
+
+    def boom(session):
+        raise RuntimeError("cannot reach profile record")
+    monkeypatch.setattr(act_tick.bluesky, "ensure_bot_label", boom)
+
+    act_tick.run_tick()
+    assert executed == []  # self-label unconfirmed -> no autonomous follow

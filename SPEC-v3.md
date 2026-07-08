@@ -56,8 +56,15 @@ magnets a meta-bit-on-loop can never be.
   never invented. No fabricated needs, no fake receipts.
 - **I-PILLAR-MIX** — META two-hander bit is SEASONING, ~1-in-5 max; substance pillars carry.
   No two consecutive posts from the same pillar (rotation enforced).
-- **I-HUMAN-GATE** — no autonomous public action; every reply/repost/follow/DM needs Slack
-  approval until a class earns autonomy (SPEC-v2 gated ladder).
+- **I-HUMAN-GATE** — no autonomous public action UNTIL a class earns autonomy (SPEC-v2
+  gated ladder). Every action starts 👍-gated; a class graduates to autonomous only with a
+  stated safety basis. See **AUTONOMY LADDER** below for the current graduated set. As of
+  2026-07-08: FOLLOW is autonomous (capped + paced + dedup'd + self-labelled); like / reply /
+  repost / DM remain 👍-gated.
+- **I-BOT-DISCLOSED (enforced)** — the account carries the Bluesky `bot` self-label on its
+  profile record (`app.bsky.actor.profile.labels` → `com.atproto.label.defs#selfLabels`,
+  val `"bot"`), set programmatically + idempotently. This is the disclosure safety basis that
+  makes autonomous engagement (e.g. auto-follow) honest rather than covert.
 - **I-DM-WARM** — DMs are the LAST tier, only to accounts that have ALREADY engaged
   (replied / followed / mentioned us), NEVER cold, ALWAYS human-approved. Cold-DM is a
   ban vector and forbidden.
@@ -98,13 +105,31 @@ magnets a meta-bit-on-loop can never be.
 - The weekly DREAMING scheduled task runs and drops content seeds into the queue.
 - All SPEC.md / SPEC-v2.md invariants still hold; name-grep on public surfaces returns zero.
 
+## AUTONOMY LADDER — graduated classes (the earn-it ladder, live state)
+Trust is earned per action-class, never granted wholesale. Each row is a class and whether it
+may act WITHOUT an operator 👍. A class graduates only when its safety basis is in place.
+
+| Class            | Autonomous? | Safety basis / gate |
+|------------------|-------------|---------------------|
+| **follow**       | **YES** (2026-07-08) | Daily cap (10/day) + pacing + dedup + I-NO-SELF + I-LOGGED, on top of the `bot` self-label (I-BOT-DISCLOSED). Autonomous follows post a lightweight Slack FYI **digest** (not gated) so the operator keeps visibility without action. |
+| like             | no — 👍-gated | low-stakes but not yet graduated; next candidate. |
+| repost           | no — 👍-gated | amplification = higher stakes; stays gated. |
+| reply / quote    | no — 👍-gated | voice-critical + stranger-facing; governed by `AUTO_REPLY_BACK` (default off). The LAST/hardest bar. |
+| DM               | no — forbidden until warm-contact tier | I-DM-WARM; out of scope here. |
+
+Mechanism: a per-class autonomy map in code (`AUTO_ACT_CLASSES`, default `follow`; converse
+reply-backs additionally governed by `AUTO_REPLY_BACK`). A class graduates by config, not a
+rebuild. Autonomy NEVER bypasses the privacy guard, the daily caps, pacing, or the per-tick cap.
+A bad call → demote the class back to gated.
+
 ## SEQUENCING (build order)
 1. **Content-engine v3** — brain-fed queue + pillar rotation + the 6 pillar generators. Kill
    the meta-loop FIRST (biggest visible win, ends the embarrassment).
 2. **DREAMING weekly schedule** — feeds ask-for-help + dreaming pillars.
 3. **ACT layer T1.5** — Slack-approve → execute reply/repost/follow (the active engagement).
    Needs the Slack read/callback path.
-4. **Earn autonomy per class** — T2 auto-like/repost on high-confidence; auto-reply later.
+4. **Earn autonomy per class** — FOLLOW graduated to autonomous 2026-07-08 (see AUTONOMY
+   LADDER). Like/repost next candidates; auto-reply (AUTO_REPLY_BACK) last + hardest.
 5. **DM tier LAST** — warm-contact detection + human-approved DM path, only after the above
    prove out.
 

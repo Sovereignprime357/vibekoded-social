@@ -30,6 +30,8 @@ SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sessio
 CREATE_SESSION_EP = f"{BASE_URL}/com.atproto.server.createSession"
 REFRESH_SESSION_EP = f"{BASE_URL}/com.atproto.server.refreshSession"
 CREATE_RECORD_EP = f"{BASE_URL}/com.atproto.repo.createRecord"
+GET_RECORD_EP = f"{BASE_URL}/com.atproto.repo.getRecord"
+PUT_RECORD_EP = f"{BASE_URL}/com.atproto.repo.putRecord"
 LIST_NOTIFICATIONS_EP = f"{BASE_URL}/app.bsky.notification.listNotifications"
 SEARCH_POSTS_EP = f"{BASE_URL}/app.bsky.feed.searchPosts"
 
@@ -325,6 +327,108 @@ def follow(subject_did: str, session: Optional[Dict[str, Any]] = None) -> Dict[s
     """Follow an account: createRecord on app.bsky.graph.follow (subject is the DID). Real network call."""
     session = session or create_session()
     return _create_record(FOLLOW_COLLECTION, build_follow_record(subject_did), session)
+
+
+# ---------------------------------------------------------------------------
+# Profile self-label — the I-BOT-DISCLOSED safety basis (SPEC-v3).
+#
+# Bluesky supports a global `bot` self-label on the profile record. It lives
+# under app.bsky.actor.profile.labels as com.atproto.label.defs#selfLabels with
+# val "bot". This is the disclosure that makes autonomous engagement honest.
+# ---------------------------------------------------------------------------
+
+PROFILE_COLLECTION = "app.bsky.actor.profile"
+SELF_LABELS_TYPE = "com.atproto.label.defs#selfLabels"
+BOT_LABEL_VAL = "bot"
+
+
+def has_bot_label(profile_record: Dict[str, Any]) -> bool:
+    """
+    True if the given profile record already carries the `bot` self-label. Pure
+    (no network) so the merge logic is unit-testable. Tolerant of a missing or
+    differently-shaped `labels` field.
+    """
+    labels = (profile_record or {}).get("labels") or {}
+    values = labels.get("values") if isinstance(labels, dict) else None
+    if not isinstance(values, list):
+        return False
+    return any(isinstance(v, dict) and v.get("val") == BOT_LABEL_VAL for v in values)
+
+
+def add_bot_label(profile_record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return a copy of the profile record with the `bot` self-label added,
+    PRESERVING every existing field (displayName, description, avatar, banner,
+    other self-labels). Pure — no network. Idempotent: if `bot` is already
+    present the record is returned unchanged in meaning.
+    """
+    record = dict(profile_record or {})
+    labels = record.get("labels")
+    values: List[Dict[str, Any]] = []
+    if isinstance(labels, dict) and isinstance(labels.get("values"), list):
+        values = [v for v in labels["values"] if isinstance(v, dict)]
+    if not any(v.get("val") == BOT_LABEL_VAL for v in values):
+        values = values + [{"val": BOT_LABEL_VAL}]
+    record["labels"] = {"$type": SELF_LABELS_TYPE, "values": values}
+    return record
+
+
+def get_profile_record(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Read our own app.bsky.actor.profile / self record. Returns the getRecord
+    response {uri, cid, value} or None if no profile record exists yet (a fresh
+    account may not have one). Real network call.
+    """
+    did = session["did"]
+    url = (
+        f"{GET_RECORD_EP}?repo={urllib.parse.quote(did, safe=':')}"
+        f"&collection={PROFILE_COLLECTION}&rkey=self"
+    )
+    try:
+        return _request("GET", url, headers=_auth_headers(session))
+    except BlueskyError as exc:
+        # A record-not-found reads as an error; treat as "no profile yet".
+        if "could not locate record" in str(exc).lower() or "RecordNotFound" in str(exc):
+            return None
+        raise
+
+
+def ensure_bot_label(session: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Idempotently ensure the `bot` self-label is set on our profile (I-BOT-DISCLOSED,
+    SPEC-v3). Reads the current profile record, adds the label if missing, and
+    putRecord's it back preserving all other fields. Safe to call every run.
+
+    Returns {"status": "already_set" | "set" | "created", "cid": <new cid?>}.
+    Real network call — never invoked by any test (the merge logic is tested via
+    has_bot_label / add_bot_label instead).
+    """
+    session = session or create_session()
+    did = session["did"]
+    existing = get_profile_record(session)
+
+    if existing is not None:
+        record = existing.get("value") or {}
+        if has_bot_label(record):
+            return {"status": "already_set"}
+        new_record = add_bot_label(record)
+        payload = {
+            "repo": did,
+            "collection": PROFILE_COLLECTION,
+            "rkey": "self",
+            "record": new_record,
+        }
+        swap = existing.get("cid")
+        if swap:
+            payload["swapRecord"] = swap  # optimistic concurrency
+        res = _request("POST", PUT_RECORD_EP, headers=_auth_headers(session), payload=payload)
+        return {"status": "set", "cid": res.get("cid")}
+
+    # No profile record yet: create a minimal one carrying just the label.
+    new_record = add_bot_label({"$type": PROFILE_COLLECTION})
+    payload = {"repo": did, "collection": PROFILE_COLLECTION, "rkey": "self", "record": new_record}
+    res = _request("POST", PUT_RECORD_EP, headers=_auth_headers(session), payload=payload)
+    return {"status": "created", "cid": res.get("cid")}
 
 
 # ---------------------------------------------------------------------------

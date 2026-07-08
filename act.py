@@ -41,7 +41,7 @@ SLACK_REACTIONS_GET_EP = "https://slack.com/api/reactions.get"
 # Per-class daily caps (I-SELECTIVE): discerning, low-volume, never farming.
 # Overridable per class via ACT_CAP_LIKE / ACT_CAP_REPOST / ACT_CAP_FOLLOW /
 # ACT_CAP_REPLY repo variables without a code change.
-DEFAULT_CAPS = {"like": 20, "repost": 10, "follow": 10, "reply": 5}
+DEFAULT_CAPS = {"like": 20, "repost": 10, "follow": 10, "reply": 20}
 
 # Burst protection (2026-07-08 mass-fire fix), independent of the daily caps:
 #   - ACT_PACING_SECONDS: minimum gap between two EXECUTED public actions in one
@@ -148,16 +148,40 @@ def load_max_per_tick() -> int:
     return DEFAULT_MAX_PER_TICK
 
 
+# The per-class autonomy map (SPEC-v3 AUTONOMY LADDER). AUTO_ACT_CLASSES names
+# ACTION types that execute WITHOUT an operator 👍. FOLLOW graduated 2026-07-08;
+# like/repost/reply stay gated by default. A class graduates by config, no rebuild.
+DEFAULT_AUTO_ACT_CLASSES = {"follow"}
+
+
+def load_auto_act_classes() -> set:
+    """
+    Which ACTION types may execute autonomously (no 👍). Default {"follow"} —
+    the first graduated class. Values:
+      - unset                 -> {"follow"} (the shipped default)
+      - "off"/"none"          -> {} (everything gated — full manual)
+      - "all"/"*"             -> {"*"} (every action type; use with care)
+      - "follow,like"         -> that explicit allowlist
+    Still bounded, always: privacy guard + daily caps + pacing + per-tick cap.
+    """
+    raw = os.environ.get("AUTO_ACT_CLASSES")
+    if raw is None:
+        return set(DEFAULT_AUTO_ACT_CLASSES)
+    raw = raw.strip().lower()
+    if raw in ("off", "none", "0", "false"):
+        return set()
+    if raw in ("all", "*"):
+        return {"*"}
+    return {c.strip() for c in raw.split(",") if c.strip()}
+
+
 def load_auto_reply_classes() -> set:
     """
-    The earn-it ladder in code (AUTO_REPLY_BACK). Which conversation reply-back
-    CLASSES may post WITHOUT an operator 👍 (autonomous). Default OFF — empty
-    set — so everything stays human-gated. Values:
+    Finer-grained ladder for conversation reply-backs (AUTO_REPLY_BACK): which
+    reply CLASSES may post WITHOUT a 👍. Default OFF (empty). Values:
       - ""/"off"/"none"/"0"/"false"  -> {} (gated; the safe default)
       - "all"/"*"                    -> {"*"} (every converse class auto-posts)
       - "appreciation,question"      -> that explicit allowlist of classes
-    Autonomy NEVER extends to scout like/repost/follow — only converse replies
-    graduate, and even then still bounded by guard + caps + pacing + per-tick cap.
     """
     raw = os.environ.get("AUTO_REPLY_BACK", "").strip().lower()
     if not raw or raw in ("off", "none", "0", "false"):
@@ -167,15 +191,32 @@ def load_auto_reply_classes() -> set:
     return {c.strip() for c in raw.split(",") if c.strip()}
 
 
-def auto_eligible(item: Dict[str, Any], auto_classes: set) -> bool:
-    """True if this item may post autonomously (no 👍) under the AUTO_REPLY_BACK ladder."""
-    if not auto_classes:
-        return False
-    if str(item.get("source", "")).lower() != "converse":
-        return False  # only conversation reply-backs can graduate; scout actions never
-    if "*" in auto_classes:
-        return True
-    return str(item.get("reply_class", "")).lower() in auto_classes
+def auto_eligible(item: Dict[str, Any], auto_act_classes: set, auto_reply_classes: set) -> bool:
+    """
+    True if this item may execute autonomously (no 👍), per the AUTONOMY LADDER.
+
+      - follow / like / repost  -> eligible iff the action type is in
+        AUTO_ACT_CLASSES (default {"follow"}). "*" enables all.
+      - reply / quote           -> ONLY conversation reply-backs graduate, and
+        only via the finer AUTO_REPLY_BACK class allowlist (default off). A
+        scout reply is never autonomous.
+    """
+    action = str(item.get("action", "")).strip().lower()
+    star_acts = "*" in auto_act_classes
+
+    if action in ("like", "repost", "follow"):
+        return star_acts or action in auto_act_classes
+
+    if action in ("reply", "quote"):
+        if str(item.get("source", "")).lower() != "converse":
+            return False  # scout replies never graduate
+        if not auto_reply_classes:
+            return False
+        if "*" in auto_reply_classes:
+            return True
+        return str(item.get("reply_class", "")).lower() in auto_reply_classes
+
+    return False
 
 
 def is_self(item: Dict[str, Any], own_did: Optional[str]) -> bool:

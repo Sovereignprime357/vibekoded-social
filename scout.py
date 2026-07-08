@@ -211,6 +211,14 @@ def shape_candidate(post: Dict[str, Any], lane: Dict[str, Any]) -> Optional[Dict
         "lane_label": lane.get("label", ""),
         "indexed_at": post.get("indexedAt", ""),
         "url": post_url(handle, uri),
+        # Cheap ranking signals (rank.py). All optional — the appview includes
+        # engagement counts on the post view; follower count is usually absent
+        # from the basic author view, so it defaults to 0 and simply doesn't
+        # contribute. Ranking is tolerant of any of these being missing.
+        "like_count": post.get("likeCount", 0),
+        "reply_count": post.get("replyCount", 0),
+        "repost_count": post.get("repostCount", 0),
+        "author_followers": author.get("followersCount", 0),
     }
 
 

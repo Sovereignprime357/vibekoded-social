@@ -33,6 +33,7 @@ import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import act
+import bluesky
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SURFACED_PATH = os.path.join(HERE, "scout-surfaced.jsonl")
@@ -109,6 +110,25 @@ def load_acted(path: str = ACT_LOG) -> Tuple[Set[str], Dict[str, int]]:
     return acted, counts
 
 
+def _post_auto_follow_digest(handles: List[str], token: str, channel: str, dry: bool) -> None:
+    """
+    One lightweight Slack FYI per tick listing the accounts we auto-followed
+    (SPEC-v3 AUTONOMY LADDER: follows are autonomous but stay visible). Not
+    gated, not per-follow. Best-effort — a Slack hiccup never fails the tick.
+    """
+    if not handles:
+        return
+    msg = "🔗 auto-followed: " + ", ".join(f"@{h}" for h in handles)
+    if dry:
+        print(f"[act_tick] DRY_RUN digest: {msg}")
+        return
+    try:
+        import surface
+        surface._post_slack_web(msg, token, channel)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[act_tick] auto-follow digest post failed (non-fatal): {exc!r}")
+
+
 def _log_act(record: Dict[str, Any], path: Optional[str] = None) -> None:
     # Resolve ACT_LOG at CALL time (not as a def-time default), so a test that
     # monkeypatches act_tick.ACT_LOG actually redirects the write — and so a
@@ -153,7 +173,8 @@ def run_tick() -> int:
     caps = act.load_caps()
     pacing_seconds = act.load_pacing_seconds()
     max_per_tick = act.load_max_per_tick()
-    auto_classes = act.load_auto_reply_classes()  # AUTO_REPLY_BACK earn-it ladder (default empty)
+    auto_act_classes = act.load_auto_act_classes()      # AUTO_ACT_CLASSES (default {"follow"})
+    auto_reply_classes = act.load_auto_reply_classes()  # AUTO_REPLY_BACK (default empty)
 
     # A Bluesky session is required for the writes AND for our own DID (I-NO-SELF).
     try:
@@ -163,11 +184,26 @@ def run_tick() -> int:
         return 1
     own_did = (session or {}).get("did")
 
+    # I-BOT-DISCLOSED is the safety basis for ALL autonomy (SPEC-v3). If any class
+    # can act without a 👍, confirm the `bot` self-label is set first; if we can't
+    # confirm it, disable autonomy for this tick (fail-closed) — 👍-gated actions
+    # are unaffected. Idempotent: a no-op once the label is set.
+    if auto_act_classes or auto_reply_classes:
+        try:
+            res = bluesky.ensure_bot_label(session)
+            print(f"[act_tick] I-BOT-DISCLOSED: bot self-label {res.get('status')}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[act_tick] could NOT confirm bot self-label ({exc!r}); disabling ALL autonomy this "
+                  "tick (fail-closed). 👍-gated actions still run.")
+            auto_act_classes = set()
+            auto_reply_classes = set()
+
     pending = [it for it in actionable if it.get("uri") not in acted_uris]
     print(f"[act_tick] {len(pending)} un-acted actionable item(s); dry_run={dry} "
           f"max_per_tick={max_per_tick} pacing={pacing_seconds}s operator={operator_id}")
 
     executed = 0
+    auto_followed: list = []  # handles auto-followed this tick, for the Slack FYI digest
     for item in pending:
         uri = item.get("uri")
         action = str(item.get("action", "")).strip().lower()
@@ -187,14 +223,15 @@ def run_tick() -> int:
 
         reactions = act.get_reactions(item["slack_channel"], item["slack_ts"], token)
         approved = act.operator_thumbsup(reactions, operator_id)
-        # Autonomy (AUTO_REPLY_BACK) only where a class has EARNED it — converse
-        # reply-backs, default none. An operator 👍 always takes precedence.
-        auto = (not approved) and act.auto_eligible(item, auto_classes)
+        # Autonomy only where a class has EARNED it (AUTONOMY LADDER): follow via
+        # AUTO_ACT_CLASSES (default), converse reply-backs via AUTO_REPLY_BACK
+        # (default off). An operator 👍 always takes precedence.
+        auto = (not approved) and act.auto_eligible(item, auto_act_classes, auto_reply_classes)
         if not (approved or auto):
             # Not approved (no operator 👍 on THIS message, not auto-eligible).
             # Leave it — a later tick re-polls. Not logged. Strict per-item gate.
             continue
-        approval_mode = "operator_thumbsup" if approved else f"auto:{item.get('reply_class')}"
+        approval_mode = "operator_thumbsup" if approved else f"auto:{action}"
 
         # Approved. Enforce the per-class daily cap (I-SELECTIVE). A cap hit is
         # transient (resets tomorrow) so it is NOT marked acted — retried later.
@@ -231,10 +268,16 @@ def run_tick() -> int:
         if status == "executed":
             today_counts[action] = today_counts.get(action, 0) + 1
             executed += 1
+            # Autonomous follows get a lightweight FYI digest (not gated, not
+            # per-follow) so the operator keeps visibility without action.
+            if action == "follow" and not approved:
+                handle = item.get("author_handle") or item.get("author_did") or "?"
+                auto_followed.append(handle)
         # dry_run_* statuses are non-terminal: nothing was actually done, so we
         # deliberately do NOT block a real run later. They ARE logged above for
         # the audit trail but their uri is not in TERMINAL_STATUSES.
 
+    _post_auto_follow_digest(auto_followed, token, channel_default, dry)
     print(f"[act_tick] done; executed {executed} action(s) this tick.")
     return 0
 
