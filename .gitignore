@@ -49,3 +49,6 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Ephemeral agent worktrees — never track
+.claude/worktrees/

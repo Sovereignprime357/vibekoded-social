@@ -8,20 +8,25 @@ unreliable `*/5` cron. Flow: your 👍 → Slack Events API → a Vercel functio
 **You need ~15 minutes.** Nothing here loosens a gate: the webhook only *wakes*
 `act_tick`; every approval/cap/guard check still runs inside it (I-TRIGGER-NOT-ACTION).
 
-You'll do three things: **(A)** deploy the function to Vercel, **(B)** set 5 env
-vars (2 are secrets), **(C)** point your Slack app at it.
+You'll do three things: **(A)** deploy the function to Vercel, **(B)** set 4 env
+vars (2 are secrets; a 5th is optional), **(C)** point your Slack app at it.
 
 ---
 
-## Before you start — collect 5 values
+## Before you start — collect 4 required values (+1 optional)
 
-| Value | Where to get it |
-|---|---|
-| `SLACK_SIGNING_SECRET` | api.slack.com/apps → your app → **Basic Information** → *App Credentials* → **Signing Secret** (Show). |
-| `GITHUB_DISPATCH_TOKEN` | A **fine-grained** GitHub PAT — created in step B2 below. |
-| `GITHUB_REPO` | `Sovereignprime357/vibekoded-social` |
-| `SLACK_OPERATOR_USER_ID` | Same value already set as the repo secret (your Slack `U…` id). In Slack: your profile → ⋯ → *Copy member ID*. |
-| `SLACK_CHANNEL_ID` | Same `C…` value as the repo secret (channel → *View channel details* → bottom). |
+| Value | Required? | Where to get it |
+|---|---|---|
+| `SLACK_SIGNING_SECRET` | **required** | api.slack.com/apps → your app → **Basic Information** → *App Credentials* → **Signing Secret** (Show). |
+| `GITHUB_DISPATCH_TOKEN` | **required** | A **fine-grained** GitHub PAT — created in step B2 below. |
+| `GITHUB_REPO` | **required** | `Sovereignprime357/vibekoded-social` |
+| `SLACK_OPERATOR_USER_ID` | **required** | Your Slack `U…` id (same as the repo secret). In Slack: your profile → ⋯ → *Copy member ID*. |
+| `SLACK_CHANNEL_ID` | **optional** | Your `C…` misc/activity channel. **No longer required by the webhook** — the 4 routed channels (likes/replies/reposts/converse) are baked-in defaults. Set this ONLY if you also want a 👍 in the misc channel to fire the trigger. |
+
+> **Multi-channel note (SPEC-v3.1):** the webhook accepts a 👍 from any of the 4
+> routed channels out of the box — no channel env var needed. To change that set,
+> set `SLACK_TRIGGER_CHANNELS` (comma-separated channel IDs); it replaces the
+> default set entirely.
 
 ---
 
@@ -46,7 +51,8 @@ Vercel serves it at `https://<your-deployment>/api/slack_events` — zero config
 
 ## B. Set the environment variables (Vercel → Project → Settings → Environment Variables)
 
-Add all five (Production scope). The first two are **secrets** — never commit them.
+Add the **4 required** vars (Production scope). The first two are **secrets** —
+never commit them. `SLACK_CHANNEL_ID` is now optional (see the note above).
 
 1. `SLACK_SIGNING_SECRET` = (from the table above)
 2. `GITHUB_DISPATCH_TOKEN` — create it now:
@@ -61,7 +67,8 @@ Add all five (Production scope). The first two are **secrets** — never commit 
    - Generate, copy the `github_pat_…` value, paste as this env var.
 3. `GITHUB_REPO` = `Sovereignprime357/vibekoded-social`
 4. `SLACK_OPERATOR_USER_ID` = your `U…` id
-5. `SLACK_CHANNEL_ID` = your `C…` id
+5. *(optional)* `SLACK_CHANNEL_ID` = your misc `C…` id — only to also fire on a 👍
+   there. The 4 routed channels already fire without it.
 
 **Redeploy** after adding env vars (Vercel → Deployments → ⋯ → Redeploy) so the
 function picks them up.
