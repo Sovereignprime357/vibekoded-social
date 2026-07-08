@@ -15,8 +15,11 @@ name: scout-act
 #   - ACT_DRY_RUN=1 var    -> polls (a read) but makes NO Bluesky write.
 # It becomes live automatically once SLACK_BOT_TOKEN + SLACK_CHANNEL_ID exist.
 on:
-  schedule:
-    - cron: "*/15 * * * *"   # every 15 min, so an operator 👍 is acted on within ~15 min
+  # PAUSED 2026-07-08: the ACT layer acted on items the operator did NOT
+  # thumbsup (mass-fire bug). Schedule disabled while we diagnose + fix; only
+  # manual dispatch remains. Re-enabled in the per-item-gate fix PR.
+  # schedule:
+  #   - cron: "*/15 * * * *"   # every 15 min, so an operator 👍 is acted on within ~15 min
   workflow_dispatch: {}     # run on demand from the Actions tab
 
 # Never let two ticks race on the act-log commit-back, and don't cancel a tick
