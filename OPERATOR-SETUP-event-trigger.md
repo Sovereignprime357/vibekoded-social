@@ -39,7 +39,9 @@ Vercel serves it at `https://<your-deployment>/api/slack_events` — zero config
 1. Go to **vercel.com → Add New… → Project → Import Git Repository**, and pick
    `Sovereignprime357/vibekoded-social`.
 2. Framework Preset: **Other** (there's no site to build — only the API function).
-   Leave build/output settings empty. Click **Deploy**.
+   Leave build/output settings empty. Click **Deploy**. *(The repo ships a
+   `pyproject.toml` that configures the Python entrypoint + zero function deps —
+   no manual Vercel build config needed.)*
 3. When it finishes, note the domain, e.g. `https://vibekoded-social.vercel.app`.
    Your **Request URL** is that + `/api/slack_events`, e.g.
    `https://vibekoded-social.vercel.app/api/slack_events`.
