@@ -30,7 +30,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import act
 
@@ -109,8 +109,12 @@ def load_acted(path: str = ACT_LOG) -> Tuple[Set[str], Dict[str, int]]:
     return acted, counts
 
 
-def _log_act(record: Dict[str, Any], path: str = ACT_LOG) -> None:
-    with open(path, "a", encoding="utf-8") as f:
+def _log_act(record: Dict[str, Any], path: Optional[str] = None) -> None:
+    # Resolve ACT_LOG at CALL time (not as a def-time default), so a test that
+    # monkeypatches act_tick.ACT_LOG actually redirects the write — and so a
+    # stray write can never land in the real committed ledger.
+    target = path or ACT_LOG
+    with open(target, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
@@ -131,6 +135,14 @@ def run_tick() -> int:
     if not channel_default:
         print("[act_tick] no SLACK_CHANNEL_ID, skipping (can't poll reactions without a channel).")
         return 0
+    if not operator_id:
+        # I-HUMAN-GATE, fail-closed (2026-07-08 mass-fire fix): without the
+        # operator's Slack user id we CANNOT verify that a 👍 came from the
+        # operator (vs a teammate / Slackbot / integration auto-reaction), so we
+        # act on NOTHING. This is the exact hole that let un-approved items fire.
+        print("[act_tick] SLACK_OPERATOR_USER_ID not set — cannot verify operator approval; "
+              "acting on NOTHING (I-HUMAN-GATE fail-closed). Set it to your Slack user id (U…) to enable acting.")
+        return 0
 
     actionable = load_actionable()
     if not actionable:
@@ -139,6 +151,8 @@ def run_tick() -> int:
 
     acted_uris, today_counts = load_acted()
     caps = act.load_caps()
+    pacing_seconds = act.load_pacing_seconds()
+    max_per_tick = act.load_max_per_tick()
 
     # A Bluesky session is required for the writes AND for our own DID (I-NO-SELF).
     try:
@@ -149,12 +163,20 @@ def run_tick() -> int:
     own_did = (session or {}).get("did")
 
     pending = [it for it in actionable if it.get("uri") not in acted_uris]
-    print(f"[act_tick] {len(pending)} un-acted actionable item(s); dry_run={dry}")
+    print(f"[act_tick] {len(pending)} un-acted actionable item(s); dry_run={dry} "
+          f"max_per_tick={max_per_tick} pacing={pacing_seconds}s operator={operator_id}")
 
     executed = 0
     for item in pending:
         uri = item.get("uri")
         action = str(item.get("action", "")).strip().lower()
+
+        # Hard per-tick ceiling (belt): stop executing once we hit it; the rest
+        # defer to a later tick (they stay un-acted, not logged terminal). This
+        # is the backstop that makes a mass-fire structurally impossible.
+        if executed >= max_per_tick:
+            print(f"[act_tick] per-tick cap reached ({executed}/{max_per_tick}); deferring the remaining {len(pending) - pending.index(item)} item(s) to next tick.")
+            break
 
         # I-NO-SELF: never engage our own posts. Terminal so it never re-checks.
         if act.is_self(item, own_did):
@@ -164,7 +186,8 @@ def run_tick() -> int:
 
         reactions = act.get_reactions(item["slack_channel"], item["slack_ts"], token)
         if not act.operator_thumbsup(reactions, operator_id):
-            # Not approved yet. Leave it — a later tick will re-poll. Not logged.
+            # Not approved (no operator 👍 on THIS message). Leave it — a later
+            # tick re-polls. Not logged. This is the strict per-item gate.
             continue
 
         # Approved. Enforce the per-class daily cap (I-SELECTIVE). A cap hit is
@@ -172,6 +195,13 @@ def run_tick() -> int:
         if not act.within_cap(action, today_counts, caps):
             print(f"[act_tick] cap reached for {action} ({today_counts.get(action,0)}/{caps.get(action)}); deferring {uri}")
             continue
+
+        # Pace executed public actions apart so multiple approvals never fire in
+        # a burst. Sleep BEFORE the 2nd+ execution (not before the first, not
+        # after skips), and never in dry-run.
+        if executed > 0 and pacing_seconds > 0 and not dry:
+            print(f"[act_tick] pacing {pacing_seconds}s before next action…")
+            time.sleep(pacing_seconds)
 
         result = act.execute_action(item, session=session, dry_run=dry)
         record = {

@@ -43,6 +43,14 @@ SLACK_REACTIONS_GET_EP = "https://slack.com/api/reactions.get"
 # ACT_CAP_REPLY repo variables without a code change.
 DEFAULT_CAPS = {"like": 20, "repost": 10, "follow": 10, "reply": 5}
 
+# Burst protection (2026-07-08 mass-fire fix), independent of the daily caps:
+#   - ACT_PACING_SECONDS: minimum gap between two EXECUTED public actions in one
+#     tick, so multiple approvals can never fire within milliseconds.
+#   - ACT_MAX_PER_TICK: hard ceiling on executed public actions per tick — a
+#     belt so no bug can ever mass-act again; the remainder defers to next tick.
+DEFAULT_PACING_SECONDS = 60.0
+DEFAULT_MAX_PER_TICK = 3
+
 # Terminal statuses: the item is done and must never fire again (I-LOGGED, no
 # double-fire). Transient statuses (awaiting thumbsup, cap reached) are NOT
 # written to the act log, so they're retried on a later tick.
@@ -65,25 +73,29 @@ def operator_thumbsup(reactions: Iterable[Dict[str, Any]], operator_id: Optional
 
     reactions: the Slack `message.reactions` list, each item shaped
                {"name": "+1", "users": ["U123", ...], "count": N}.
-    operator_id: the operator's Slack user id. If set (recommended), ONLY a
-                 thumbsup whose `users` includes that id counts — a reaction
-                 from anyone else in the channel is ignored (I-HUMAN-GATE). If
-                 None (single-operator channel, id not configured), ANY thumbsup
-                 counts.
+    operator_id: the operator's Slack user id. Approval requires a thumbsup
+                 whose `users` includes THIS id — a reaction from anyone or
+                 anything else (a teammate, Slackbot, an integration's
+                 auto-👍) is ignored (I-HUMAN-GATE).
+
+    FAIL-CLOSED on identity (the 2026-07-08 mass-fire fix): if operator_id is
+    not provided, we CANNOT verify the operator approved, so we return False —
+    act on nothing — rather than accepting "any 👍 from anyone". The old
+    permissive fallback is exactly what let auto-reactions approve everything.
+    Callers (act_tick) must refuse to run without an operator id.
 
     Never raises on a malformed reactions blob — a shape it can't read means
     "no approval", which fails safe (nothing gets acted on).
     """
+    if not operator_id:
+        # Can't confirm it was the operator -> not approved. Never guess.
+        return False
     try:
         for r in reactions or []:
             if _base_emoji(r.get("name")) not in THUMBSUP_NAMES:
                 continue
-            if operator_id:
-                if operator_id in (r.get("users") or []):
-                    return True
-            else:
-                if (r.get("count") or 0) >= 1 or (r.get("users") or []):
-                    return True
+            if operator_id in (r.get("users") or []):
+                return True
     except Exception:  # noqa: BLE001 — unreadable blob => no approval (fail safe)
         return False
     return False
@@ -112,6 +124,28 @@ def within_cap(action: str, counts: Dict[str, int], caps: Optional[Dict[str, int
     caps = caps if caps is not None else load_caps()
     cap = caps.get(action, 0)
     return counts.get(action, 0) < cap
+
+
+def load_pacing_seconds() -> float:
+    """Minimum gap (s) between executed public actions in a tick (ACT_PACING_SECONDS)."""
+    val = os.environ.get("ACT_PACING_SECONDS", "").strip()
+    if val:
+        try:
+            return max(0.0, float(val))
+        except ValueError:
+            pass
+    return DEFAULT_PACING_SECONDS
+
+
+def load_max_per_tick() -> int:
+    """Hard ceiling on executed public actions per tick (ACT_MAX_PER_TICK)."""
+    val = os.environ.get("ACT_MAX_PER_TICK", "").strip()
+    if val:
+        try:
+            return max(0, int(val))
+        except ValueError:
+            pass
+    return DEFAULT_MAX_PER_TICK
 
 
 def is_self(item: Dict[str, Any], own_did: Optional[str]) -> bool:
