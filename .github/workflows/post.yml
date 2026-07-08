@@ -73,11 +73,14 @@ jobs:
         run: |
           git config user.name "vibekoded-social-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add content-queue.jsonl posted.jsonl skipped.jsonl
+          # Stage the FULL state-file superset (unchanged files are no-ops on the
+          # ephemeral runner) so no state a run writes is ever left unstaged.
+          git add content-queue.jsonl posted.jsonl skipped.jsonl handled.jsonl \
+                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else
             git commit -m "chore(post-tick): update queue/post state [skip ci]"
-            git pull --rebase origin HEAD
+            git pull --rebase --autostash origin HEAD
             git push
           fi
