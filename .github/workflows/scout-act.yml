@@ -73,6 +73,13 @@ jobs:
           ACT_CAP_REPOST: ${{ vars.ACT_CAP_REPOST || '10' }}
           ACT_CAP_FOLLOW: ${{ vars.ACT_CAP_FOLLOW || '10' }}
           ACT_CAP_REPLY: ${{ vars.ACT_CAP_REPLY || '5' }}
+          # Burst protection (independent of the daily caps).
+          ACT_PACING_SECONDS: ${{ vars.ACT_PACING_SECONDS || '60' }}
+          ACT_MAX_PER_TICK: ${{ vars.ACT_MAX_PER_TICK || '3' }}
+          # Earn-it ladder: which conversation reply-back CLASSES may post WITHOUT
+          # a 👍 (autonomous). Default OFF -> everything human-gated. Set e.g.
+          # "appreciation" or "all" ONLY once a class has proven out.
+          AUTO_REPLY_BACK: ${{ vars.AUTO_REPLY_BACK || 'off' }}
           # Act has its OWN pause switch, independent of post/scout dry-run.
           DRY_RUN: ${{ vars.ACT_DRY_RUN || '0' }}
         run: python act_tick.py

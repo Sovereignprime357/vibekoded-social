@@ -42,8 +42,19 @@ jobs:
           BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
           GEN_MODEL: anthropic
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Conversation-continuation (converse.py): surface reply-backs via the
+          # bot token so each carries a Slack ts and act_tick can gate on the 👍.
+          # Falls back to webhook/print if the token isn't set (safe-degrade).
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # The privacy guard runs on every drafted reply-back, fail-closed,
+          # incl. client/project terms — a secret, never committed.
+          GUARD_EXTRA_TERMS: ${{ secrets.GUARD_EXTRA_TERMS }}
+          # Anti-spiral: max reply-backs proposed per thread. Tune without a push.
+          CONVERSE_MAX_THREAD_DEPTH: ${{ vars.CONVERSE_MAX_THREAD_DEPTH || '3' }}
           DRY_RUN: ${{ vars.DRY_RUN || '0' }}
         run: python banter.py
 

@@ -153,6 +153,7 @@ def run_tick() -> int:
     caps = act.load_caps()
     pacing_seconds = act.load_pacing_seconds()
     max_per_tick = act.load_max_per_tick()
+    auto_classes = act.load_auto_reply_classes()  # AUTO_REPLY_BACK earn-it ladder (default empty)
 
     # A Bluesky session is required for the writes AND for our own DID (I-NO-SELF).
     try:
@@ -185,10 +186,15 @@ def run_tick() -> int:
             continue
 
         reactions = act.get_reactions(item["slack_channel"], item["slack_ts"], token)
-        if not act.operator_thumbsup(reactions, operator_id):
-            # Not approved (no operator 👍 on THIS message). Leave it — a later
-            # tick re-polls. Not logged. This is the strict per-item gate.
+        approved = act.operator_thumbsup(reactions, operator_id)
+        # Autonomy (AUTO_REPLY_BACK) only where a class has EARNED it — converse
+        # reply-backs, default none. An operator 👍 always takes precedence.
+        auto = (not approved) and act.auto_eligible(item, auto_classes)
+        if not (approved or auto):
+            # Not approved (no operator 👍 on THIS message, not auto-eligible).
+            # Leave it — a later tick re-polls. Not logged. Strict per-item gate.
             continue
+        approval_mode = "operator_thumbsup" if approved else f"auto:{item.get('reply_class')}"
 
         # Approved. Enforce the per-class daily cap (I-SELECTIVE). A cap hit is
         # transient (resets tomorrow) so it is NOT marked acted — retried later.
@@ -210,6 +216,9 @@ def run_tick() -> int:
             "cid": item.get("cid"),
             "author_did": item.get("author_did"),
             "action": action,
+            "source": item.get("source"),
+            "reply_class": item.get("reply_class"),
+            "approval_mode": approval_mode,
             "slack_ts": item.get("slack_ts"),
             "dry_run": dry,
             **result,

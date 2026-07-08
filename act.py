@@ -148,6 +148,36 @@ def load_max_per_tick() -> int:
     return DEFAULT_MAX_PER_TICK
 
 
+def load_auto_reply_classes() -> set:
+    """
+    The earn-it ladder in code (AUTO_REPLY_BACK). Which conversation reply-back
+    CLASSES may post WITHOUT an operator 👍 (autonomous). Default OFF — empty
+    set — so everything stays human-gated. Values:
+      - ""/"off"/"none"/"0"/"false"  -> {} (gated; the safe default)
+      - "all"/"*"                    -> {"*"} (every converse class auto-posts)
+      - "appreciation,question"      -> that explicit allowlist of classes
+    Autonomy NEVER extends to scout like/repost/follow — only converse replies
+    graduate, and even then still bounded by guard + caps + pacing + per-tick cap.
+    """
+    raw = os.environ.get("AUTO_REPLY_BACK", "").strip().lower()
+    if not raw or raw in ("off", "none", "0", "false"):
+        return set()
+    if raw in ("all", "*"):
+        return {"*"}
+    return {c.strip() for c in raw.split(",") if c.strip()}
+
+
+def auto_eligible(item: Dict[str, Any], auto_classes: set) -> bool:
+    """True if this item may post autonomously (no 👍) under the AUTO_REPLY_BACK ladder."""
+    if not auto_classes:
+        return False
+    if str(item.get("source", "")).lower() != "converse":
+        return False  # only conversation reply-backs can graduate; scout actions never
+    if "*" in auto_classes:
+        return True
+    return str(item.get("reply_class", "")).lower() in auto_classes
+
+
 def is_self(item: Dict[str, Any], own_did: Optional[str]) -> bool:
     """I-NO-SELF: never engage with our own account's posts (loop-breaker)."""
     if not own_did:
@@ -245,11 +275,21 @@ def execute_action(
         return {**base, "status": "executed", "record_uri": res.get("uri"), "subject_did": author_did}
 
     if action in ("reply", "quote"):
-        if not uri or not cid:
+        # Thread targets: converse items carry explicit parent/root refs so the
+        # reply-back threads correctly under the stranger's reply. Scout items
+        # carry none -> fall back to the surfaced post as both root and parent
+        # (correct for the standalone hits scout surfaces).
+        parent_uri = item.get("parent_uri") or uri
+        parent_cid = item.get("parent_cid") or cid
+        root_uri = item.get("root_uri") or parent_uri
+        root_cid = item.get("root_cid") or parent_cid
+        if not parent_uri or not parent_cid:
             return {**base, "status": "error", "detail": "missing uri/cid for reply"}
-        draft = _draft_reply(item)
+        # A converse item was drafted + guarded at surface time; use that exact
+        # text (re-guarded below as the safety net). Scout items draft fresh now.
+        draft = item.get("draft_text") or _draft_reply(item)
         if not draft or not draft.strip():
-            return {**base, "status": "empty_draft", "detail": "generation returned empty"}
+            return {**base, "status": "empty_draft", "detail": "no draft text"}
         ok, reason = guard.check(draft)
         if not ok:
             # I-PRIVACY: drop it. Never post, never sanitize. Log for review.
@@ -258,8 +298,8 @@ def execute_action(
             return {**base, "status": "dry_run_reply", "draft": draft}
         res = bluesky.reply(
             draft,
-            root_uri=uri, root_cid=cid,
-            parent_uri=uri, parent_cid=cid,
+            root_uri=root_uri, root_cid=root_cid,
+            parent_uri=parent_uri, parent_cid=parent_cid,
             session=session,
         )
         return {**base, "status": "executed", "record_uri": res.get("uri"), "posted_text": draft}

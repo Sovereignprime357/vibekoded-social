@@ -134,3 +134,54 @@ def test_load_pacing_and_max_defaults(monkeypatch):
     monkeypatch.delenv("ACT_MAX_PER_TICK", raising=False)
     assert act.load_pacing_seconds() == act.DEFAULT_PACING_SECONDS
     assert act.load_max_per_tick() == act.DEFAULT_MAX_PER_TICK
+
+
+# --- AUTO_REPLY_BACK earn-it ladder -----------------------------------------
+
+def test_auto_reply_classes_parsing(monkeypatch):
+    monkeypatch.setenv("AUTO_REPLY_BACK", "off")
+    assert act.load_auto_reply_classes() == set()
+    monkeypatch.setenv("AUTO_REPLY_BACK", "all")
+    assert act.load_auto_reply_classes() == {"*"}
+    monkeypatch.setenv("AUTO_REPLY_BACK", "appreciation, question")
+    assert act.load_auto_reply_classes() == {"appreciation", "question"}
+
+
+def test_auto_eligible_only_converse_and_allowlisted():
+    # Scout actions NEVER graduate, even with "*".
+    assert act.auto_eligible({"source": "scout", "reply_class": "question"}, {"*"}) is False
+    # Converse item, class allowlisted -> eligible.
+    assert act.auto_eligible({"source": "converse", "reply_class": "appreciation"}, {"appreciation"}) is True
+    # Converse item, class NOT allowlisted -> not eligible.
+    assert act.auto_eligible({"source": "converse", "reply_class": "question"}, {"appreciation"}) is False
+    # Empty allowlist (default) -> nothing eligible.
+    assert act.auto_eligible({"source": "converse", "reply_class": "question"}, set()) is False
+
+
+def test_auto_reply_back_posts_converse_without_thumbsup(monkeypatch, tmp_path):
+    # A converse reply-back, NOT 👍'd, but its class is in the AUTO_REPLY_BACK
+    # allowlist -> it posts autonomously. A scout item (also un-👍'd) does NOT.
+    items = [
+        {"uri": "conv1", "cid": "c1", "author_did": "did:plc:a", "action": "reply",
+         "text": "thanks!", "slack_ts": "1.0", "slack_channel": "C1",
+         "source": "converse", "reply_class": "appreciation", "draft_text": "glad it landed."},
+        {"uri": "scout1", "cid": "c2", "author_did": "did:plc:b", "action": "like",
+         "text": "x", "slack_ts": "2.0", "slack_channel": "C1", "source": "scout"},
+    ]
+    executed, _ = _wire(monkeypatch, tmp_path, items, reacted_ts=set())  # nothing 👍'd
+    monkeypatch.setenv("AUTO_REPLY_BACK", "appreciation")
+
+    act_tick.run_tick()
+    assert executed == ["conv1"]   # converse appreciation auto-posted; scout NOT
+
+
+def test_default_no_auto_nothing_fires_without_thumbsup(monkeypatch, tmp_path):
+    items = [
+        {"uri": "conv1", "cid": "c1", "author_did": "did:plc:a", "action": "reply",
+         "text": "thanks!", "slack_ts": "1.0", "slack_channel": "C1",
+         "source": "converse", "reply_class": "appreciation", "draft_text": "glad it landed."},
+    ]
+    executed, _ = _wire(monkeypatch, tmp_path, items, reacted_ts=set())
+    monkeypatch.setenv("AUTO_REPLY_BACK", "off")  # default
+    act_tick.run_tick()
+    assert executed == []  # gated: no 👍, no auto -> nothing
