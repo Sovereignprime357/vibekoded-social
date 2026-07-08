@@ -103,23 +103,99 @@ def test_surface_all_empty_list():
     assert surface.surface_all([], dry_run=True) == 0
 
 
-# --- batch summary header (#5 firehose fix) ---------------------------------
+# --- multi-channel routing (SPEC-v3) ----------------------------------------
 
-def test_batch_summary_counts_by_action():
-    items = [_item(action="reply"), _item(action="reply"), _item(action="like"), _item(action="follow")]
-    s = surface.batch_summary(items)
-    assert "4 find" in s
-    assert "2 replies" in s
-    assert "1 likes" in s
-    assert "1 follows" in s
-    # stable order: replies before likes before follows
-    assert s.index("replies") < s.index("likes") < s.index("follows")
+CHMAP = {"base": "C_BASE", "like": "C_LIKE", "reply": "C_REPLY",
+         "repost": "C_REPOST", "converse": "C_CONV"}
 
 
-def test_batch_summary_only_lists_present_actions():
-    s = surface.batch_summary([_item(action="follow"), _item(action="follow")])
-    assert "2 follows" in s
-    assert "replies" not in s and "likes" not in s
+def test_resolve_scout_actions_to_typed_channels():
+    assert surface.resolve_channel(_item(action="like"), CHMAP) == "C_LIKE"
+    assert surface.resolve_channel(_item(action="reply"), CHMAP) == "C_REPLY"
+    assert surface.resolve_channel(_item(action="repost"), CHMAP) == "C_REPOST"
+
+
+def test_resolve_converse_goes_to_converse_channel_regardless_of_action():
+    # source=converse wins over action (converse items are action "reply").
+    assert surface.resolve_channel(_item(action="reply", source="converse"), CHMAP) == "C_CONV"
+    assert surface.resolve_channel(_item(action="like", source="converse"), CHMAP) == "C_CONV"
+
+
+def test_resolve_follow_and_unknown_go_to_base():
+    assert surface.resolve_channel(_item(action="follow"), CHMAP) == "C_BASE"
+    assert surface.resolve_channel(_item(action="weird"), CHMAP) == "C_BASE"
+
+
+def test_load_channel_map_unset_falls_back_to_base(monkeypatch):
+    for e in ("SLACK_CHANNEL_LIKES", "SLACK_CHANNEL_REPLIES", "SLACK_CHANNEL_REPOSTS", "SLACK_CHANNEL_CONVERSE"):
+        monkeypatch.delenv(e, raising=False)
+    m = surface.load_channel_map("C_BASE")
+    assert m["like"] == "C_BASE" and m["reply"] == "C_BASE"
+    assert m["repost"] == "C_BASE" and m["converse"] == "C_BASE"
+
+
+def test_load_channel_map_uses_set_vars(monkeypatch):
+    monkeypatch.setenv("SLACK_CHANNEL_LIKES", "C_L")
+    monkeypatch.setenv("SLACK_CHANNEL_CONVERSE", "C_C")
+    m = surface.load_channel_map("C_BASE")
+    assert m["like"] == "C_L"
+    assert m["converse"] == "C_C"
+    assert m["reply"] == "C_BASE"  # unset -> base
+
+
+def test_surface_all_routes_each_item_to_its_channel(tmp_path, monkeypatch):
+    ledger = str(tmp_path / "surfaced.jsonl")
+    monkeypatch.setattr(surface, "SURFACED_PATH", ledger)
+    for env, val in [("SLACK_CHANNEL_LIKES", "C_LIKE"), ("SLACK_CHANNEL_REPLIES", "C_REPLY"),
+                     ("SLACK_CHANNEL_REPOSTS", "C_REPOST"), ("SLACK_CHANNEL_CONVERSE", "C_CONV")]:
+        monkeypatch.setenv(env, val)
+
+    posted = []  # (channel) per post, in order
+
+    def fake_web(text, token, channel, timeout=15):
+        posted.append(channel)
+        return f"ts-{channel}"
+    monkeypatch.setattr(surface, "_post_slack_web", fake_web)
+
+    items = [
+        _item(uri="at://l", action="like"),
+        _item(uri="at://r", action="reply"),
+        _item(uri="at://rp", action="repost"),
+        _item(uri="at://cv", action="reply", source="converse"),
+    ]
+    n = surface.surface_all(items, dry_run=False, bot_token="xoxb", channel="C_BASE")
+    assert n == 4
+    assert posted == ["C_LIKE", "C_REPLY", "C_REPOST", "C_CONV"]
+
+    # Ledger records the RESOLVED per-item channel (so act_tick polls the right one).
+    with open(ledger, encoding="utf-8") as f:
+        rows = {json.loads(l)["uri"]: json.loads(l) for l in f if l.strip()}
+    assert rows["at://l"]["slack_channel"] == "C_LIKE"
+    assert rows["at://cv"]["slack_channel"] == "C_CONV"
+    assert rows["at://cv"]["slack_ts"] == "ts-C_CONV"
+
+
+def test_surface_all_not_in_channel_degrades_gracefully(tmp_path, monkeypatch):
+    ledger = str(tmp_path / "surfaced.jsonl")
+    monkeypatch.setattr(surface, "SURFACED_PATH", ledger)
+    monkeypatch.setenv("SLACK_CHANNEL_LIKES", "C_LIKE")
+    monkeypatch.setenv("SLACK_CHANNEL_REPLIES", "C_REPLY")
+
+    # The likes channel rejects (bot not invited) -> None; replies channel ok.
+    def fake_web(text, token, channel, timeout=15):
+        return None if channel == "C_LIKE" else "ts-ok"
+    monkeypatch.setattr(surface, "_post_slack_web", fake_web)
+
+    n = surface.surface_all(
+        [_item(uri="at://l", action="like"), _item(uri="at://r", action="reply")],
+        dry_run=False, bot_token="xoxb", channel="C_BASE",
+    )
+    assert n == 2  # both processed; the tick did not crash
+    with open(ledger, encoding="utf-8") as f:
+        rows = {json.loads(l)["uri"]: json.loads(l) for l in f if l.strip()}
+    assert rows["at://l"]["slack_ts"] is None      # failed channel -> not actionable
+    assert rows["at://l"]["slack_channel"] == "C_LIKE"
+    assert rows["at://r"]["slack_ts"] == "ts-ok"   # the other still worked
 
 
 # --- bot-token (chat.postMessage) path captures ts for the ACT layer --------

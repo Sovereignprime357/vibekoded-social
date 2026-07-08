@@ -75,6 +75,13 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Multi-channel routing (SPEC-v3): each scout action type gets its own
+          # single-purpose channel. Channel IDs are NOT secret -> safe as defaults,
+          # overridable via repo vars. Any unset var falls back to SLACK_CHANNEL_ID.
+          # (Bot must be invited to each channel or posts fail not_in_channel.)
+          SLACK_CHANNEL_LIKES: ${{ vars.SLACK_CHANNEL_LIKES || 'C0BFZGBNFEH' }}
+          SLACK_CHANNEL_REPLIES: ${{ vars.SLACK_CHANNEL_REPLIES || 'C0BG4NSKSQZ' }}
+          SLACK_CHANNEL_REPOSTS: ${{ vars.SLACK_CHANNEL_REPOSTS || 'C0BGX5UHJ0G' }}
           # Scout has its OWN pause switch, independent of post-tick's DRY_RUN,
           # so posting and scouting can be toggled separately. Set repo
           # variable SCOUT_DRY_RUN=1 for preview-only.
