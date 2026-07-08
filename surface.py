@@ -65,6 +65,22 @@ def format_item(item: Dict[str, Any]) -> str:
     if len(text) > 400:
         text = text[:397] + "…"
 
+    # Conversation-continuation items show the incoming reply as context and,
+    # crucially, the PROPOSED reply-back the operator is 👍-approving — so the
+    # 👍 approves the actual text, not a blind "reply to this".
+    source = str(item.get("source", "")).lower()
+    if source == "converse":
+        header = f"*💬 REPLY-BACK*  ·  class: {item.get('reply_class', '?')}  ·  @{handle} replied:"
+        lines = [header, f"> {text}"]
+        if why:
+            lines.append(f"_why:_ {why}")
+        draft = str(item.get("draft_text", "")).strip()
+        if draft:
+            lines.append(f"*proposed reply:* {draft}")
+        if url:
+            lines.append(f"→ {url}")
+        return "\n".join(lines)
+
     lines = [
         f"*{action_lbl}*  ·  confidence: {conf}  ·  lane: {lane}",
         f"@{handle}:",
@@ -131,6 +147,12 @@ def _append_surfaced(
         "slack_channel": slack_channel,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    # Conversation-continuation items (converse.py) carry a pre-drafted,
+    # pre-guarded reply-back plus explicit thread refs so act_tick can post the
+    # exact approved text, threaded correctly. Persist them when present.
+    for k in ("source", "reply_class", "draft_text", "parent_uri", "parent_cid", "root_uri", "root_cid"):
+        if item.get(k) is not None:
+            rec[k] = item.get(k)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 

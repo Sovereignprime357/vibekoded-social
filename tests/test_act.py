@@ -189,3 +189,40 @@ def test_reply_dry_run_runs_guard_but_no_post(monkeypatch):
     assert res["status"] == "dry_run_reply"
     assert res["draft"]
     assert calls == []
+
+
+# --- converse reply items: use pre-drafted text + explicit thread refs -------
+
+def test_reply_uses_pre_drafted_text_and_thread_refs(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        act.bluesky, "reply",
+        lambda text, root_uri, root_cid, parent_uri, parent_cid, session=None: (
+            calls.append((text, root_uri, parent_uri)) or {"uri": "at://reply"}
+        ),
+    )
+    # If _draft_reply is called, that's a bug — the draft is already provided.
+    monkeypatch.setattr(act, "_draft_reply", lambda item: (_ for _ in ()).throw(AssertionError("should not re-draft")))
+
+    item = _item(
+        "reply",
+        source="converse",
+        draft_text="we run a flat memory file plus an index.",
+        parent_uri="at://them/reply", parent_cid="pcid",
+        root_uri="at://root/1", root_cid="rootcid",
+        uri="at://them/reply", cid="pcid",
+    )
+    res = act.execute_action(item)
+    assert res["status"] == "executed"
+    assert res["posted_text"] == "we run a flat memory file plus an index."
+    # Threaded correctly: root from the item, parent = the stranger's reply.
+    assert calls == [("we run a flat memory file plus an index.", "at://root/1", "at://them/reply")]
+
+
+def test_reply_pre_drafted_text_still_guarded(monkeypatch):
+    """Even a pre-drafted converse reply is re-guarded at act time (safety net)."""
+    calls = _patch_bluesky(monkeypatch)
+    item = _item("reply", source="converse", draft_text="thanks — my daughter loved it")
+    res = act.execute_action(item)
+    assert res["status"] == "guard_blocked"
+    assert calls == []

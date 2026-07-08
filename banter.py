@@ -12,8 +12,10 @@ Flow (per SPEC.md ARCHITECTURE + INVARIANTS I-NO-AUTO-POKE / I-GATED-REPLIES):
            account. Safe to auto-reply (it's our own account, no stranger
            engagement involved) -> generate an in-voice banter reply and
            POST it.
-    (b) authored by a STRANGER -> generate a DRAFT reply, append to
-        drafts.jsonl for operator approval. Do NOT auto-post to strangers.
+    (b) authored by a STRANGER -> hand off to converse.py: triage (Haiku),
+        draft a reply-back in voice, guard it, and SURFACE it to Slack for the
+        operator's 👍 (posted by act_tick through the same gate). Do NOT
+        auto-post to strangers — human-gated by default (SPEC-v3).
 
   Every notification id is tracked in handled.jsonl to dedup across runs
   (cron fires every ~20 min; without dedup the same notification would be
@@ -49,10 +51,10 @@ from typing import Any, Dict, List, Optional, Set
 
 import guard
 import generate
+import converse
 
 STATE_DIR = os.path.dirname(os.path.abspath(__file__))
 HANDLED_LOG = os.path.join(STATE_DIR, "handled.jsonl")
-DRAFTS_LOG = os.path.join(STATE_DIR, "drafts.jsonl")
 POSTED_LOG = os.path.join(STATE_DIR, "posted.jsonl")
 SKIPPED_LOG = os.path.join(STATE_DIR, "skipped.jsonl")
 
@@ -138,31 +140,6 @@ def _log_guard_block(context: str, notification: Dict[str, Any], text: str, reas
             "reason": f"guard blocked: {reason}",
         },
     )
-
-
-def _push_to_slack(stranger_handle: str, stranger_text: str, draft_text: str) -> None:
-    """
-    Push a stranger-reply draft to Slack for operator approval. Best-effort:
-    a missing SLACK_WEBHOOK_URL or a failed POST never breaks the tick — the
-    draft is already safely in drafts.jsonl regardless. Skipped in DRY_RUN.
-    This is the mobile-reachable half of I-GATED-REPLIES: the operator reads
-    the draft on his phone and posts it himself from the Bluesky app.
-    """
-    webhook = os.environ.get("SLACK_WEBHOOK_URL", "").strip()
-    if not webhook or _is_dry_run():
-        return
-    message = (
-        f"*New reply on Bluesky* from `@{stranger_handle}`:\n"
-        f"> {stranger_text}\n\n"
-        f"*Draft reply* (tweak if needed, then post it yourself from the Bluesky app):\n"
-        f"> {draft_text}"
-    )
-    try:
-        import requests
-
-        requests.post(webhook, json={"text": message}, timeout=15)
-    except Exception as exc:  # noqa: BLE001 — Slack push is best-effort, never fatal
-        print(f"[banter] Slack push failed (non-fatal, draft is saved): {exc!r}")
 
 
 def classify(notification: Dict[str, Any], our_did: str, our_own_post_uris: Set[str]) -> str:
@@ -266,51 +243,6 @@ def process_own_account(notification: Dict[str, Any], bluesky_module, session: D
         _mark_handled(notification, "post_failed")
 
 
-def process_stranger(notification: Dict[str, Any]) -> None:
-    """
-    Case (b): a stranger replied/mentioned us. Generate a DRAFT reply and
-    append to drafts.jsonl. Never auto-post here — I-GATED-REPLIES: replies
-    to strangers start draft-only until the tier is earned (SPEC v1.1).
-    """
-    text_in = _extract_text(notification)
-    author = notification.get("author") or {}
-    pseudo_entry = {"raw": text_in, "type": "moment"}
-
-    try:
-        draft_text = generate.generate(pseudo_entry, kind="draft_reply")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[banter] generation exception for stranger draft: {exc!r}")
-        _mark_handled(notification, "generation_error")
-        return
-
-    if not draft_text:
-        print("[banter] empty generation for stranger draft — skipping.")
-        _mark_handled(notification, "empty_generation")
-        return
-
-    ok, reason = guard.check(draft_text)
-    if not ok:
-        print(f"[banter] GUARD BLOCKED stranger draft: {reason}")
-        _log_guard_block("stranger_draft", notification, draft_text, reason)
-        _mark_handled(notification, "guard_blocked")
-        return
-
-    _append_jsonl(
-        DRAFTS_LOG,
-        {
-            "ts": _now_iso(),
-            "notification_uri": notification.get("uri"),
-            "stranger_handle": author.get("handle"),
-            "stranger_text": text_in,
-            "draft_reply": draft_text,
-            "status": "pending_operator_approval",
-        },
-    )
-    print(f"[banter] drafted reply to @{author.get('handle')} -> drafts.jsonl (awaiting approval)")
-    _push_to_slack(author.get("handle") or "unknown", text_in, draft_text)
-    _mark_handled(notification, "drafted")
-
-
 def poll_own_threads(
     bluesky_module,
     session: Dict[str, Any],
@@ -327,7 +259,7 @@ def poll_own_threads(
     DID that is neither one of our scheduled posts nor already handled is a
     human manual comment -> banter-reply to it via process_own_account.
     Strangers (other DIDs) are skipped here — they're handled by the
-    notifications flow (process_stranger), so we don't double-process them.
+    notifications flow (converse.handle_incoming_reply), so we don't double-process them.
     """
     processed = 0
     for row in _recent_posted(limit=10):
@@ -400,7 +332,12 @@ def run_banter() -> int:
         if category == "own_account":
             process_own_account(notification, bluesky, session)
         elif category == "stranger":
-            process_stranger(notification)
+            # Conversation-continuation (SPEC-v3): triage the inbound reply,
+            # draft a reply-back in voice, guard it, and SURFACE it to Slack for
+            # the operator's 👍 (posted by act_tick through the same gate).
+            # Supersedes the old draft-to-drafts.jsonl path. converse owns its
+            # own handled.jsonl marking + thread-depth + I-NO-SELF loop guard.
+            converse.handle_incoming_reply(notification, our_did)
 
     if new_count == 0:
         print("[banter] no new reply/mention notifications this tick.")
