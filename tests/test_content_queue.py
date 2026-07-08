@@ -162,3 +162,81 @@ def test_used_field_missing_is_treated_as_unused(tmp_path):
 
 def test_appended_entries_are_valid_types_only():
     assert content_queue.VALID_TYPES == {"ship", "fix", "decision", "moment", "receipt"}
+
+
+# --- SPEC-v3 pillar tagging + rotation --------------------------------------
+
+def test_append_entry_accepts_valid_pillar(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    entry = content_queue.append_entry("a showcase", type="ship", pillar="SHOWCASE", path=path)
+    assert entry["pillar"] == "showcase"  # normalized lowercase
+
+
+def test_append_entry_rejects_invalid_pillar(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    try:
+        content_queue.append_entry("x", type="ship", pillar="not-a-pillar", path=path)
+        assert False, "expected ValueError for invalid pillar"
+    except ValueError:
+        pass
+
+
+def _seed(path, raw, pillar, ts):
+    content_queue.append_entry(raw, type="moment", pillar=pillar, ts=ts, path=path)
+
+
+def test_rotation_no_history_returns_first_unused(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    _seed(path, "a", "showcase", "2026-07-01T00:00:00Z")
+    _seed(path, "b", "operator", "2026-07-02T00:00:00Z")
+    assert content_queue.get_next_rotated([], path=path)["raw"] == "a"
+
+
+def test_rotation_skips_same_pillar_as_last(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    _seed(path, "a", "showcase", "2026-07-01T00:00:00Z")
+    _seed(path, "b", "operator", "2026-07-02T00:00:00Z")
+    # Last posted pillar was showcase -> skip "a", pick "b".
+    assert content_queue.get_next_rotated(["showcase"], path=path)["raw"] == "b"
+
+
+def test_rotation_meta_capped_within_window(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    _seed(path, "m", "meta", "2026-07-01T00:00:00Z")
+    _seed(path, "s", "showcase", "2026-07-02T00:00:00Z")
+    # META already appeared 1 post ago (inside the 5-window) -> meta is blocked,
+    # so "m" is skipped and the substance post "s" wins.
+    picked = content_queue.get_next_rotated(["meta"], path=path)
+    assert picked["raw"] == "s"
+
+
+def test_rotation_meta_allowed_once_window_clears(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    _seed(path, "m", "meta", "2026-07-01T00:00:00Z")
+    # META last appeared 5+ posts ago (outside the window) -> allowed again.
+    recent = ["showcase", "operator", "question", "operator"]  # len 4, no meta
+    assert content_queue.get_next_rotated(recent, path=path)["raw"] == "m"
+
+
+def test_rotation_relaxes_consecutive_but_never_meta_cap(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    # Only same-pillar substance left -> no-consecutive is relaxed (post it).
+    _seed(path, "only", "showcase", "2026-07-01T00:00:00Z")
+    assert content_queue.get_next_rotated(["showcase"], path=path)["raw"] == "only"
+
+
+def test_rotation_returns_none_when_only_meta_and_meta_blocked(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    _seed(path, "m", "meta", "2026-07-01T00:00:00Z")
+    # Only a META entry remains AND meta is inside the cap window -> nothing
+    # postable (never relax the META cap). Skip the tick rather than burst meta.
+    assert content_queue.get_next_rotated(["meta"], path=path) is None
+
+
+def test_rotation_untagged_entry_never_blocks(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    # Legacy entry with no pillar field at all.
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": "2026-07-01T00:00:00Z", "type": "ship", "raw": "legacy", "used": False}) + "\n")
+    # Even if the last pillar was "" it should still post (untagged != consecutive block).
+    assert content_queue.get_next_rotated(["showcase"], path=path)["raw"] == "legacy"

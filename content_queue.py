@@ -33,6 +33,14 @@ from typing import Any, Dict, List, Optional
 
 VALID_TYPES = {"ship", "fix", "decision", "moment", "receipt"}
 
+# Content PILLARS (SPEC-v3 I-PILLAR-MIX). The poster rotates across these so the
+# feed stops navel-gazing about being a bot. META is SEASONING only — capped at
+# ~1-in-5 by the rotation logic below, and never two same-pillar posts in a row.
+VALID_PILLARS = {"showcase", "operator", "ask-help", "dreaming", "question", "meta"}
+META_PILLAR = "meta"
+# META may appear at most once in any window of this many consecutive posts.
+META_WINDOW = 5
+
 DEFAULT_QUEUE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "content-queue.jsonl")
 
 
@@ -50,6 +58,7 @@ def append_entry(
     angle: Optional[str] = None,
     shot: Optional[str] = None,
     ts: Optional[str] = None,
+    pillar: Optional[str] = None,
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -59,12 +68,22 @@ def append_entry(
     an unrecognized type rather than silently writing bad data (this file
     is read by a generation pipeline downstream — garbage in is a real cost
     there, not just here).
+
+    `pillar` (SPEC-v3) tags the entry for rotation (see VALID_PILLARS). It is
+    optional — a legacy entry with no pillar still posts (treated as an
+    untagged pillar by the rotation logic), so this stays backward-compatible
+    with the v1/v2 queue shape.
     """
     if not raw or not str(raw).strip():
         raise ValueError("append_entry requires non-empty `raw` content")
 
     if type not in VALID_TYPES:
         raise ValueError(f"type must be one of {sorted(VALID_TYPES)}, got {type!r}")
+
+    if pillar is not None:
+        pillar = str(pillar).strip().lower()
+        if pillar and pillar not in VALID_PILLARS:
+            raise ValueError(f"pillar must be one of {sorted(VALID_PILLARS)}, got {pillar!r}")
 
     entry: Dict[str, Any] = {
         "ts": ts or _now_iso(),
@@ -76,6 +95,8 @@ def append_entry(
         entry["angle"] = str(angle).strip()
     if shot:
         entry["shot"] = str(shot).strip()
+    if pillar:
+        entry["pillar"] = pillar
 
     target = _queue_path(path)
     os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
@@ -133,6 +154,64 @@ def get_all_unused(path: Optional[str] = None) -> List[Dict[str, Any]]:
         for e in _read_all_lines(path)
         if e.get("used") is False or e.get("used") is None
     ]
+
+
+def _pillar_of(entry: Dict[str, Any]) -> str:
+    return str(entry.get("pillar") or "").strip().lower()
+
+
+def get_next_rotated(
+    recent_pillars: Optional[List[str]] = None,
+    path: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Pick the next entry to post, honoring SPEC-v3 I-PILLAR-MIX rotation:
+
+      - **No two consecutive posts from the same pillar.** The candidate's
+        pillar must differ from the most recently posted pillar.
+      - **META is seasoning (≤ 1-in-`META_WINDOW`).** A META entry is only
+        eligible if META hasn't appeared in the last `META_WINDOW - 1` posts.
+
+    `recent_pillars` is the list of recently-posted pillars, MOST RECENT FIRST
+    (the caller reads these from posted.jsonl). An empty/None list means "no
+    history" — the first postable entry wins.
+
+    Selection is still FIFO within the eligible set (oldest unused first), so
+    nothing gets buried. If nothing satisfies the no-consecutive rule (e.g. the
+    only material left shares the last pillar), we relax that ONE rule as a last
+    resort so the queue never fully stalls — but the META cap is NEVER relaxed,
+    because a burst of meta is the exact failure SPEC-v3 was written to kill.
+    Returns None only when there is genuinely nothing postable under the META cap.
+
+    Entries with no `pillar` tag (legacy v1/v2 shape) are treated as a distinct
+    untagged pillar (""), so they never count as consecutive with a tagged one
+    and are never META-capped.
+    """
+    recent = [str(p or "").strip().lower() for p in (recent_pillars or [])]
+    last_pillar = recent[0] if recent else None
+    # META blocked if it appears anywhere in the trailing window (excluding the
+    # slot we're about to fill): last META_WINDOW-1 posts.
+    meta_blocked = META_PILLAR in recent[: META_WINDOW - 1]
+
+    unused = get_all_unused(path)
+
+    def _eligible(entry: Dict[str, Any], enforce_consecutive: bool) -> bool:
+        p = _pillar_of(entry)
+        if p == META_PILLAR and meta_blocked:
+            return False
+        if enforce_consecutive and p and last_pillar and p == last_pillar:
+            return False
+        return True
+
+    # Pass 1: full rotation rules.
+    for entry in unused:
+        if _eligible(entry, enforce_consecutive=True):
+            return entry
+    # Pass 2: relax no-consecutive (last resort), keep META cap hard.
+    for entry in unused:
+        if _eligible(entry, enforce_consecutive=False):
+            return entry
+    return None
 
 
 def mark_used(entry_ts: str, path: Optional[str] = None) -> bool:

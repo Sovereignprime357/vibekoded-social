@@ -7,6 +7,11 @@
 # Cached Bluesky session (contains live JWTs)
 .session.json
 
+# Guard extra-terms: client/project-confidential words for the privacy guard.
+# This repo is PUBLIC — these terms must NEVER be committed. Set them via the
+# GUARD_EXTRA_TERMS secret in CI, or this gitignored file for local runs.
+guard-extra-terms.txt
+
 # --- State files: INTENTIONALLY NOT IGNORED -------------------------------
 # content-queue.jsonl, posted.jsonl, skipped.jsonl, handled.jsonl, and
 # drafts.jsonl are all TRACKED in git, not ignored. GitHub Actions runners

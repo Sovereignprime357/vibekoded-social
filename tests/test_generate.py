@@ -86,3 +86,26 @@ def test_complete_exhausted_429_raises(monkeypatch):
 
     with pytest.raises(generate.RateLimitError):
         generate.complete("hi", model="groq", retries=1)
+
+
+# --- SPEC-v3 pillar-aware prompt assembly -----------------------------------
+
+def test_build_prompt_injects_pillar_steer():
+    entry = {"raw": "shipped the scout loop", "type": "ship", "pillar": "showcase"}
+    prompt = generate.build_prompt(entry, kind="post")
+    assert "SHOWCASE" in prompt          # the pillar steer is present
+    assert "proof-of-work" in prompt
+
+
+def test_build_prompt_meta_pillar_steer():
+    entry = {"raw": "the two-hander bit", "type": "moment", "pillar": "meta"}
+    prompt = generate.build_prompt(entry, kind="post")
+    assert "META" in prompt
+    assert "seasoning" in prompt
+
+
+def test_build_prompt_untagged_pillar_has_no_steer():
+    entry = {"raw": "legacy entry", "type": "ship"}  # no pillar
+    prompt = generate.build_prompt(entry, kind="post")
+    # None of the pillar headers should appear for an untagged entry.
+    assert "PILLAR:" not in prompt
