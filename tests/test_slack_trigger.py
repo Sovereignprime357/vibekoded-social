@@ -122,13 +122,56 @@ def test_reaction_removed_ignored():
 
 
 def test_unconfigured_operator_or_channel_fails_closed():
-    # Missing operator id or channel -> never dispatch.
-    assert slack_trigger.decide(_reaction(), "", CH)["action"] == "ignore"
-    assert slack_trigger.decide(_reaction(), OP, "")["action"] == "ignore"
+    # Missing operator id or an empty channel set -> never dispatch.
+    assert slack_trigger.decide(_reaction(), "", {CH})["action"] == "ignore"
+    assert slack_trigger.decide(_reaction(), OP, set())["action"] == "ignore"
 
 
 def test_unknown_top_level_type_ignored():
     assert slack_trigger.decide({"type": "something_else"}, OP, CH)["action"] == "ignore"
+
+
+# --- multi-channel trigger (SPEC-v3.1): 👍 fires from ANY actionable channel ---
+
+def test_load_trigger_channels_defaults_are_the_four_routed():
+    chans = slack_trigger.load_trigger_channels(None, "")
+    assert chans == set(slack_trigger.DEFAULT_TRIGGER_CHANNELS)
+    assert chans == {"C0BFZGBNFEH", "C0BG4NSKSQZ", "C0BGX5UHJ0G", "C0BG2RQ7SF4"}
+
+
+def test_load_trigger_channels_adds_base_when_present():
+    chans = slack_trigger.load_trigger_channels(None, "C_BASE")
+    assert "C_BASE" in chans
+    assert set(slack_trigger.DEFAULT_TRIGGER_CHANNELS).issubset(chans)
+
+
+def test_load_trigger_channels_override_wins():
+    chans = slack_trigger.load_trigger_channels("A1, B2 , C3", "C_BASE")
+    assert chans == {"A1", "B2", "C3"}  # explicit override replaces the whole set
+
+
+def test_thumbsup_in_each_routed_channel_dispatches():
+    chans = slack_trigger.load_trigger_channels(None, "")  # the 4 baked defaults, no base
+    for cid in slack_trigger.DEFAULT_TRIGGER_CHANNELS:
+        d = slack_trigger.decide(_reaction(channel=cid), OP, chans)
+        assert d["action"] == "dispatch", f"👍 in {cid} should fire"
+
+
+def test_thumbsup_in_non_actionable_channel_ignored():
+    chans = slack_trigger.load_trigger_channels(None, "")
+    assert slack_trigger.decide(_reaction(channel="C_NOT_ROUTED"), OP, chans)["action"] == "ignore"
+
+
+def test_non_operator_ignored_even_in_routed_channel():
+    chans = slack_trigger.load_trigger_channels(None, "")
+    d = slack_trigger.decide(_reaction(user="U_RANDO", channel="C0BFZGBNFEH"), OP, chans)
+    assert d["action"] == "ignore"
+
+
+def test_non_thumbsup_ignored_even_in_routed_channel():
+    chans = slack_trigger.load_trigger_channels(None, "")
+    d = slack_trigger.decide(_reaction(reaction="eyes", channel="C0BG4NSKSQZ"), OP, chans)
+    assert d["action"] == "ignore"
 
 
 # --- dispatch payload -------------------------------------------------------

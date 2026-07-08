@@ -82,10 +82,17 @@ class handler(BaseHTTPRequestHandler):  # Vercel Python entrypoint (class named 
             self._send(400, "bad json")
             return
 
+        # Accept a 👍 from ANY actionable channel (SPEC-v3.1 routing). The 4 routed
+        # channels are baked defaults, so no new env var is required; SLACK_CHANNEL_ID
+        # is added when present, and SLACK_TRIGGER_CHANNELS overrides the whole set.
+        channels = slack_trigger.load_trigger_channels(
+            os.environ.get("SLACK_TRIGGER_CHANNELS"),
+            os.environ.get("SLACK_CHANNEL_ID", ""),
+        )
         decision = slack_trigger.decide(
             body,
             operator_id=os.environ.get("SLACK_OPERATOR_USER_ID", ""),
-            target_channel=os.environ.get("SLACK_CHANNEL_ID", ""),
+            target_channels=channels,
         )
         action = decision.get("action")
 

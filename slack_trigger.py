@@ -30,6 +30,36 @@ DEFAULT_WINDOW_S = 300
 
 DISPATCH_EVENT_TYPE = "slack-thumbsup"
 
+# The actionable channels a 👍 may fire from (SPEC-v3.1 multi-channel routing).
+# Baked as DEFAULTS so no new operator env var is required — the Vercel setup
+# stays the same. These are the 4 routed channels (likes/replies/reposts/converse).
+# SLACK_CHANNEL_ID (the misc/activity home) is added at load time when present,
+# and the whole set is overridable via SLACK_TRIGGER_CHANNELS (comma-separated).
+DEFAULT_TRIGGER_CHANNELS = (
+    "C0BFZGBNFEH",  # likes
+    "C0BG4NSKSQZ",  # replies
+    "C0BGX5UHJ0G",  # reposts
+    "C0BG2RQ7SF4",  # converse
+)
+
+
+def load_trigger_channels(trigger_channels_csv: Optional[str] = None, base_channel: Optional[str] = None) -> set:
+    """
+    Resolve the set of channels a 👍 may fire from.
+
+      - SLACK_TRIGGER_CHANNELS set (comma-separated) -> exactly that set (override).
+      - else -> the 4 baked routed channels + SLACK_CHANNEL_ID (if present).
+
+    No new operator var is needed for the default case; SLACK_CHANNEL_ID is now
+    OPTIONAL for the webhook (the routed channels are covered by the defaults).
+    """
+    if trigger_channels_csv and trigger_channels_csv.strip():
+        return {c.strip() for c in trigger_channels_csv.split(",") if c.strip()}
+    chans = set(DEFAULT_TRIGGER_CHANNELS)
+    if base_channel and base_channel.strip():
+        chans.add(base_channel.strip())
+    return chans
+
 
 def _base_emoji(name: str) -> str:
     """Strip Slack's '::skin-tone-N' suffix so all thumbsup tones match."""
@@ -75,7 +105,7 @@ def verify_signature(
         return False
 
 
-def decide(body: Dict[str, Any], operator_id: Optional[str], target_channel: Optional[str]) -> Dict[str, Any]:
+def decide(body: Dict[str, Any], operator_id: Optional[str], target_channels: Any) -> Dict[str, Any]:
     """
     Decide what to do with a (already signature-verified) Slack payload.
 
@@ -84,8 +114,12 @@ def decide(body: Dict[str, Any], operator_id: Optional[str], target_channel: Opt
       {"action": "dispatch",  "reason": "..."}          -> fire repository_dispatch
       {"action": "ignore",    "reason": "..."}          -> 200 ack, do nothing
 
-    FAIL-CLOSED (I-OPERATOR-SCOPED): if operator_id or target_channel is unset, or
-    any field doesn't match exactly, the result is "ignore" — never "dispatch".
+    `target_channels` is the SET of actionable channels a 👍 may fire from
+    (SPEC-v3.1 routing: the 4 routed channels + optionally SLACK_CHANNEL_ID). A
+    single string is tolerated for back-compat.
+
+    FAIL-CLOSED (I-OPERATOR-SCOPED): if operator_id is unset, or target_channels
+    is empty, or any field doesn't match, the result is "ignore" — never "dispatch".
     """
     if not isinstance(body, dict):
         return {"action": "ignore", "reason": "body not an object"}
@@ -101,10 +135,12 @@ def decide(body: Dict[str, Any], operator_id: Optional[str], target_channel: Opt
     if event.get("type") != "reaction_added":
         return {"action": "ignore", "reason": f"not a reaction_added ({event.get('type')!r})"}
 
-    # Fail-closed on missing config: without an operator id / channel we can't
+    channels = {target_channels} if isinstance(target_channels, str) else set(target_channels or [])
+
+    # Fail-closed on missing config: without an operator id / any channel we can't
     # attribute the reaction, so we never dispatch.
-    if not operator_id or not target_channel:
-        return {"action": "ignore", "reason": "operator id or channel not configured"}
+    if not operator_id or not channels:
+        return {"action": "ignore", "reason": "operator id or channels not configured"}
 
     if _base_emoji(event.get("reaction")) not in THUMBSUP_NAMES:
         return {"action": "ignore", "reason": f"not a thumbsup ({event.get('reaction')!r})"}
@@ -112,10 +148,10 @@ def decide(body: Dict[str, Any], operator_id: Optional[str], target_channel: Opt
         return {"action": "ignore", "reason": "reactor is not the operator"}
 
     channel = (event.get("item") or {}).get("channel")
-    if channel != target_channel:
-        return {"action": "ignore", "reason": "reaction not in the target channel"}
+    if channel not in channels:
+        return {"action": "ignore", "reason": "reaction not in an actionable channel"}
 
-    return {"action": "dispatch", "reason": "operator thumbsup in target channel"}
+    return {"action": "dispatch", "reason": "operator thumbsup in an actionable channel"}
 
 
 def build_dispatch_payload(body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
