@@ -182,9 +182,18 @@ def test_parse_batch_maps_by_explicit_index_out_of_order():
 # --- classify_all live batch path (monkeypatched model, no network) --------
 
 def _live_env(monkeypatch):
-    """Force the live batch path: not dry-run, key present, no real sleeping."""
+    """
+    Force the live batch path: not dry-run, key present, no real sleeping.
+
+    Sets keys for BOTH free (groq) and paid (anthropic) engines so the live
+    path is reached regardless of TRIAGE_MODEL's default — which flipped from
+    groq to anthropic in the Haiku-switch PR. generate.complete is monkeypatched
+    in every live test anyway, so no real network call is made; only the
+    "a key is present" gate matters here.
+    """
     monkeypatch.delenv("DRY_RUN", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(triage, "TRIAGE_BATCH_PAUSE_S", 0)
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
