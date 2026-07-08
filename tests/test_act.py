@@ -32,8 +32,12 @@ def test_thumbsup_from_someone_else_ignored_when_operator_set():
     assert act.operator_thumbsup(_reactions(users=("U_RANDO",)), operator_id="U_OP") is False
 
 
-def test_thumbsup_any_user_counts_when_no_operator_configured():
-    assert act.operator_thumbsup(_reactions(users=("U_RANDO",)), operator_id=None) is True
+def test_thumbsup_fail_closed_when_no_operator_configured():
+    # 2026-07-08 mass-fire fix: without an operator id we CANNOT verify who
+    # reacted, so approval fails closed — even a real thumbsup does NOT approve.
+    assert act.operator_thumbsup(_reactions(users=("U_RANDO",)), operator_id=None) is False
+    assert act.operator_thumbsup(_reactions(users=("U_OP",)), operator_id=None) is False
+    assert act.operator_thumbsup(_reactions(users=("U_OP",)), operator_id="") is False
 
 
 def test_non_thumbsup_reaction_ignored():
