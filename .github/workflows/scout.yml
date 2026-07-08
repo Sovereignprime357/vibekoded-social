@@ -46,10 +46,16 @@ jobs:
         env:
           BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
-          # Triage runs on a FREE model. TRIAGE_MODEL picks gemini|groq (repo
-          # variable, default GROQ — Gemini free tier = 20 req/day, useless for a
-          # scanner). Only the matching key needs to exist.
-          TRIAGE_MODEL: ${{ vars.TRIAGE_MODEL || 'groq' }}
+          # Triage now defaults to paid Anthropic HAIKU. The free models proved
+          # unusable for a scanner: Gemini free tier = 20 req/day, and Groq's
+          # gpt-oss-120b returned empty output (reasoning bloat) + 429'd on the 8k
+          # TPM cap. Batching keeps Haiku ~$2/mo. TRIAGE_MODEL can override back to
+          # gemini|groq (their keys stay below as fallbacks).
+          TRIAGE_MODEL: ${{ vars.TRIAGE_MODEL || 'anthropic' }}
+          # Haiku key — REQUIRED for the default anthropic triage path. Without it,
+          # triage honestly stubs ([stub: no ANTHROPIC_API_KEY set]) and surfaces
+          # nothing. ANTHROPIC_MODEL default (claude-haiku-4-5) lives in generate.py.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Model IDs are perishable (Google killed gemini-2.0-flash 2026-06-01,
           # Groq killed llama-3.3-70b-versatile 2026-06-17). Overridable via repo
           # variables so the next deprecation is a variable change, not a code push.
