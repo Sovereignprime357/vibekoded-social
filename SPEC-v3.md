@@ -122,6 +122,31 @@ reply-backs additionally governed by `AUTO_REPLY_BACK`). A class graduates by co
 rebuild. Autonomy NEVER bypasses the privacy guard, the daily caps, pacing, or the per-tick cap.
 A bad call → demote the class back to gated.
 
+## SLACK CHANNEL ROUTING (v3.1 — single-purpose audit trails)
+Surfacing is routed by type so each Slack channel is a single-purpose audit trail —
+the operator's triage-tuning feedback loop (he can mute/scan/tune per action type).
+
+| Item | Channel env | Fallback |
+|---|---|---|
+| scout **like** | `SLACK_CHANNEL_LIKES` | `SLACK_CHANNEL_ID` |
+| scout **reply** | `SLACK_CHANNEL_REPLIES` | `SLACK_CHANNEL_ID` |
+| scout **repost** | `SLACK_CHANNEL_REPOSTS` | `SLACK_CHANNEL_ID` |
+| **converse** reply-back (source=converse, any action) | `SLACK_CHANNEL_CONVERSE` | `SLACK_CHANNEL_ID` |
+| scout **follow** card + autonomous-follow FYI **digest** | `SLACK_CHANNEL_ID` (misc/activity home) | — |
+
+- **I-CHANNEL-ROUTING** — an actionable card posts via the bot token
+  (`chat.postMessage`) to its RESOLVED typed channel, and the per-item
+  `(slack_channel, slack_ts)` is recorded in the ledger so `act_tick` polls the
+  reaction on the SAME channel it was posted to (routing threads end-to-end:
+  surface → ledger → act poll). Converse items are ISOLATED from scout items
+  (their own channel), regardless of action. Any unset channel var → fall back to
+  `SLACK_CHANNEL_ID`; an item is NEVER dropped for lack of a channel. A failed
+  post (e.g. `not_in_channel` — bot not invited) logs which channel and continues;
+  the tick never crashes, the item is just logged non-actionable.
+- Channel IDs are NOT secret — wired as workflow env defaults, overridable via
+  repo vars (the `ACT_CAP_REPLY` pattern). Operator must invite the bot to each
+  typed channel or posts fail `not_in_channel`.
+
 ## SEQUENCING (build order)
 1. **Content-engine v3** — brain-fed queue + pillar rotation + the 6 pillar generators. Kill
    the meta-loop FIRST (biggest visible win, ends the embarrassment).

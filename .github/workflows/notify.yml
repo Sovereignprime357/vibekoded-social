@@ -50,6 +50,10 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          # Multi-channel routing (SPEC-v3): converse reply-backs go to their own
+          # channel. Channel ID is NOT secret -> safe default, overridable via repo
+          # var; unset falls back to SLACK_CHANNEL_ID. (Bot must be invited there.)
+          SLACK_CHANNEL_CONVERSE: ${{ vars.SLACK_CHANNEL_CONVERSE || 'C0BG2RQ7SF4' }}
           # The privacy guard runs on every drafted reply-back, fail-closed,
           # incl. client/project terms — a secret, never committed.
           GUARD_EXTRA_TERMS: ${{ secrets.GUARD_EXTRA_TERMS }}

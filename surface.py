@@ -203,31 +203,66 @@ def _post_slack_web(text: str, token: str, channel: str, timeout: int = 15) -> O
         print(f"[surface] Slack chat.postMessage error (non-fatal): {exc}")
         return None
     if not data.get("ok"):
-        # Slack returns 200 with ok:false + an error string (e.g. not_in_channel).
-        print(f"[surface] Slack chat.postMessage rejected: {data.get('error', resp.text[:120])}")
+        # Slack returns 200 with ok:false + an error string. The common one is
+        # `not_in_channel` — the bot hasn't been invited to that typed channel.
+        # Name the channel so the operator knows exactly which one to fix.
+        print(f"[surface] Slack chat.postMessage rejected for channel {channel}: "
+              f"{data.get('error', resp.text[:120])}")
         return None
     return data.get("ts")
 
 
-def batch_summary(items: List[Dict[str, Any]]) -> str:
+# ---------------------------------------------------------------------------
+# Multi-channel routing (SPEC-v3): each channel is a single-purpose audit trail
+# so the operator's triage-tuning feedback loop is legible.
+#
+#   scout LIKE   -> SLACK_CHANNEL_LIKES
+#   scout REPLY  -> SLACK_CHANNEL_REPLIES
+#   scout REPOST -> SLACK_CHANNEL_REPOSTS
+#   converse     -> SLACK_CHANNEL_CONVERSE   (any action, source=converse)
+#   everything else (scout follow, unknown) + the follow FYI digest
+#                -> SLACK_CHANNEL_ID          (the misc / activity home)
+#
+# Any unset channel var falls back to SLACK_CHANNEL_ID — never drop an item.
+# ---------------------------------------------------------------------------
+
+_CHANNEL_ENV = {
+    "like": "SLACK_CHANNEL_LIKES",
+    "reply": "SLACK_CHANNEL_REPLIES",
+    "repost": "SLACK_CHANNEL_REPOSTS",
+    "converse": "SLACK_CHANNEL_CONVERSE",
+}
+
+
+def load_channel_map(base: Optional[str] = None) -> Dict[str, str]:
     """
-    One scannable header line for a batch: "N finds: X replies, Y likes, Z reposts,
-    W follows". Pure/testable. Only the action types actually present are listed,
-    in a stable order.
+    Build the routing map from env. `base` is SLACK_CHANNEL_ID (the fallback /
+    misc home). Every typed channel defaults to `base` when its var is unset, so
+    an unconfigured channel routes to base rather than dropping the item.
     """
-    order = [("reply", "replies"), ("like", "likes"), ("repost", "reposts"), ("follow", "follows")]
-    counts: Dict[str, int] = {}
-    for it in items:
-        a = str(it.get("action", "")).strip().lower()
-        counts[a] = counts.get(a, 0) + 1
-    parts = [f"{counts[a]} {label}" for a, label in order if counts.get(a)]
-    # Any other/unknown action types, appended so nothing is silently dropped.
-    known = {a for a, _ in order}
-    other = sum(v for k, v in counts.items() if k not in known)
-    if other:
-        parts.append(f"{other} other")
-    n = len(items)
-    return f"*📥 {n} find{'s' if n != 1 else ''}:* " + ", ".join(parts)
+    base = (base if base is not None else os.environ.get("SLACK_CHANNEL_ID", "")).strip()
+    m = {"base": base}
+    for key, env in _CHANNEL_ENV.items():
+        m[key] = os.environ.get(env, "").strip() or base
+    return m
+
+
+def resolve_channel(item: Dict[str, Any], channel_map: Dict[str, str]) -> str:
+    """
+    Resolve one item to its target channel id (pure/testable).
+
+      - source == "converse"  -> converse channel (regardless of action)
+      - scout like/reply/repost -> that typed channel
+      - anything else (scout follow, unknown action) -> base (SLACK_CHANNEL_ID)
+
+    Falls back to base for any unmapped/empty result — never returns "" if base
+    is set, so an item is never dropped for lack of a channel.
+    """
+    base = channel_map.get("base", "")
+    if str(item.get("source", "")).strip().lower() == "converse":
+        return channel_map.get("converse") or base
+    action = str(item.get("action", "")).strip().lower()
+    return channel_map.get(action) or base
 
 
 # ---------------------------------------------------------------------------
@@ -249,10 +284,15 @@ def surface_all(
 
     Transport ladder (first that applies wins), per SPEC-v2 T1.5:
       1. DRY_RUN            -> print only, no ledger write (repeatable preview).
-      2. bot_token+channel  -> chat.postMessage; capture the message `ts` so the
-                               ACT layer can poll for the operator's thumbsup.
+      2. bot_token+channel  -> chat.postMessage to the item's RESOLVED typed
+                               channel (SPEC-v3 routing); capture the per-item ts
+                               so the ACT layer polls the correct channel.
       3. webhook_url        -> legacy incoming webhook (NO ts; not actionable).
       4. nothing configured -> print to the run log (still logged to the ledger).
+
+    Routing: each item goes to its single-purpose channel (likes/replies/reposts/
+    converse), else SLACK_CHANNEL_ID. No mixed batch header — each channel is
+    single-type now, so a per-batch mix header would be meaningless.
 
     surfaced_path resolves at CALL time (default: the module SURFACED_PATH) and
     is threaded explicitly into the ledger helpers — never relying on their
@@ -266,7 +306,8 @@ def surface_all(
     dry_run = _is_dry_run() if dry_run is None else dry_run
     webhook_url = webhook_url if webhook_url is not None else os.environ.get("SLACK_WEBHOOK_URL", "").strip()
     bot_token = bot_token if bot_token is not None else os.environ.get("SLACK_BOT_TOKEN", "").strip()
-    channel = channel if channel is not None else os.environ.get("SLACK_CHANNEL_ID", "").strip()
+    base_channel = channel if channel is not None else os.environ.get("SLACK_CHANNEL_ID", "").strip()
+    channel_map = load_channel_map(base_channel)
     surfaced_path = surfaced_path or SURFACED_PATH
     already = load_surfaced_uris(surfaced_path)
 
@@ -274,38 +315,31 @@ def surface_all(
     # in the order given — scout_tick passes them ranked best-first (SPEC-v3).
     to_surface = [it for it in items if not (it.get("uri") and it.get("uri") in already)]
 
-    # A scannable batch header so the firehose is legible on mobile: how many
-    # finds and the action-type mix, posted BEFORE the ranked cards. Only for a
-    # real batch (>1) — a lone item (e.g. a converse reply-back) needs no header.
-    if len(to_surface) > 1:
-        summary = batch_summary(to_surface)
-        if dry_run:
-            print(f"---- [DRY_RUN] batch header ----\n{summary}")
-        elif bot_token and channel:
-            _post_slack_web(summary, bot_token, channel)
-        elif webhook_url:
-            _post_slack(summary, webhook_url)
-        else:
-            print(summary)
-
     count = 0
     for item in to_surface:
         uri = item.get("uri")
+        target = resolve_channel(item, channel_map)  # the item's typed channel
 
         text = format_item(item)
         slack_ts: Optional[str] = None
         slack_channel: Optional[str] = None
 
         if dry_run:
-            print("---- [DRY_RUN] would surface to Slack ----")
+            print(f"---- [DRY_RUN] would surface to #{target} ----")
             print(text)
-        elif bot_token and channel:
-            slack_ts = _post_slack_web(text, bot_token, channel)
-            slack_channel = channel
+        elif bot_token and target:
+            # Post to the RESOLVED channel and record it per-item — act_tick polls
+            # reactions on exactly this (channel, ts) pair, so routing threads
+            # end-to-end. A failure (e.g. not_in_channel) logs which channel and
+            # continues; the item is logged without a ts (not actionable).
+            slack_ts = _post_slack_web(text, bot_token, target)
+            slack_channel = target
             if slack_ts:
-                print(f"[surface] posted to Slack channel {channel} ts={slack_ts} (actionable)")
+                print(f"[surface] posted {item.get('action')}/{item.get('source','scout')} "
+                      f"to channel {target} ts={slack_ts} (actionable)")
             else:
-                print("[surface] chat.postMessage failed; item logged without a ts (not actionable)")
+                print(f"[surface] post to channel {target} failed; item logged without a ts "
+                      "(not actionable — is the bot invited to that channel?)")
         elif webhook_url:
             _post_slack(text, webhook_url)
         else:
