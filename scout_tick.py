@@ -29,6 +29,7 @@ import os
 import sys
 
 import bluesky
+import rank
 import scout
 import surface
 import triage
@@ -60,6 +61,12 @@ def main() -> int:
     if not surfaced_items:
         print("[scout_tick] triage found nothing on-mission this tick; done")
         return 0
+
+    # Rank best-first so the operator's scarce 👍 lands on the highest-leverage
+    # rooms (SPEC-v3). Score components are logged on each item.
+    surfaced_items = rank.rank_items(surfaced_items)
+    print("[scout_tick] ranked (best-first): "
+          + ", ".join(f"{it.get('author_handle')}={it.get('rank_score')}" for it in surfaced_items[:8]))
 
     n = surface.surface_all(surfaced_items, dry_run=dry)
     print(f"[scout_tick] done; surfaced {n} item(s) for your review")

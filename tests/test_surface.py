@@ -103,6 +103,25 @@ def test_surface_all_empty_list():
     assert surface.surface_all([], dry_run=True) == 0
 
 
+# --- batch summary header (#5 firehose fix) ---------------------------------
+
+def test_batch_summary_counts_by_action():
+    items = [_item(action="reply"), _item(action="reply"), _item(action="like"), _item(action="follow")]
+    s = surface.batch_summary(items)
+    assert "4 find" in s
+    assert "2 replies" in s
+    assert "1 likes" in s
+    assert "1 follows" in s
+    # stable order: replies before likes before follows
+    assert s.index("replies") < s.index("likes") < s.index("follows")
+
+
+def test_batch_summary_only_lists_present_actions():
+    s = surface.batch_summary([_item(action="follow"), _item(action="follow")])
+    assert "2 follows" in s
+    assert "replies" not in s and "likes" not in s
+
+
 # --- bot-token (chat.postMessage) path captures ts for the ACT layer --------
 
 def test_surface_all_bot_token_records_ts_and_act_fields(tmp_path, monkeypatch):

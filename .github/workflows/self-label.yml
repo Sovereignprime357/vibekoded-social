@@ -1,0 +1,33 @@
+name: self-label
+
+# Idempotently set the Bluesky `bot` self-label on our profile (I-BOT-DISCLOSED,
+# SPEC-v3) — the disclosure safety basis for autonomous engagement (auto-follow).
+# Manual only: run once from the Actions tab; re-running is a harmless no-op.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  self-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure bot self-label
+        env:
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+        run: python ensure_bot_label.py

@@ -150,7 +150,8 @@ def _append_surfaced(
     # Conversation-continuation items (converse.py) carry a pre-drafted,
     # pre-guarded reply-back plus explicit thread refs so act_tick can post the
     # exact approved text, threaded correctly. Persist them when present.
-    for k in ("source", "reply_class", "draft_text", "parent_uri", "parent_cid", "root_uri", "root_cid"):
+    for k in ("source", "reply_class", "draft_text", "parent_uri", "parent_cid", "root_uri", "root_cid",
+              "rank_score", "rank_components"):
         if item.get(k) is not None:
             rec[k] = item.get(k)
     with open(path, "a", encoding="utf-8") as f:
@@ -208,6 +209,27 @@ def _post_slack_web(text: str, token: str, channel: str, timeout: int = 15) -> O
     return data.get("ts")
 
 
+def batch_summary(items: List[Dict[str, Any]]) -> str:
+    """
+    One scannable header line for a batch: "N finds: X replies, Y likes, Z reposts,
+    W follows". Pure/testable. Only the action types actually present are listed,
+    in a stable order.
+    """
+    order = [("reply", "replies"), ("like", "likes"), ("repost", "reposts"), ("follow", "follows")]
+    counts: Dict[str, int] = {}
+    for it in items:
+        a = str(it.get("action", "")).strip().lower()
+        counts[a] = counts.get(a, 0) + 1
+    parts = [f"{counts[a]} {label}" for a, label in order if counts.get(a)]
+    # Any other/unknown action types, appended so nothing is silently dropped.
+    known = {a for a, _ in order}
+    other = sum(v for k, v in counts.items() if k not in known)
+    if other:
+        parts.append(f"{other} other")
+    n = len(items)
+    return f"*📥 {n} find{'s' if n != 1 else ''}:* " + ", ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -248,11 +270,27 @@ def surface_all(
     surfaced_path = surfaced_path or SURFACED_PATH
     already = load_surfaced_uris(surfaced_path)
 
+    # Items that will actually be surfaced this call (skip already-surfaced dupes),
+    # in the order given — scout_tick passes them ranked best-first (SPEC-v3).
+    to_surface = [it for it in items if not (it.get("uri") and it.get("uri") in already)]
+
+    # A scannable batch header so the firehose is legible on mobile: how many
+    # finds and the action-type mix, posted BEFORE the ranked cards. Only for a
+    # real batch (>1) — a lone item (e.g. a converse reply-back) needs no header.
+    if len(to_surface) > 1:
+        summary = batch_summary(to_surface)
+        if dry_run:
+            print(f"---- [DRY_RUN] batch header ----\n{summary}")
+        elif bot_token and channel:
+            _post_slack_web(summary, bot_token, channel)
+        elif webhook_url:
+            _post_slack(summary, webhook_url)
+        else:
+            print(summary)
+
     count = 0
-    for item in items:
+    for item in to_surface:
         uri = item.get("uri")
-        if uri and uri in already:
-            continue
 
         text = format_item(item)
         slack_ts: Optional[str] = None

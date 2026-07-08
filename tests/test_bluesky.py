@@ -81,3 +81,62 @@ def test_follow_posts_to_follow_collection(monkeypatch):
     bluesky.follow("did:plc:them", session=SESSION)
     assert calls["payload"]["collection"] == "app.bsky.graph.follow"
     assert calls["payload"]["record"]["subject"] == "did:plc:them"
+
+
+# --- bot self-label (I-BOT-DISCLOSED) merge logic (pure) --------------------
+
+def test_has_bot_label():
+    assert bluesky.has_bot_label({"labels": {"$type": bluesky.SELF_LABELS_TYPE, "values": [{"val": "bot"}]}}) is True
+    assert bluesky.has_bot_label({"labels": {"values": [{"val": "!no-unauthenticated"}]}}) is False
+    assert bluesky.has_bot_label({}) is False
+    assert bluesky.has_bot_label({"labels": None}) is False
+
+
+def test_add_bot_label_is_idempotent_and_preserves_fields():
+    prof = {"$type": "app.bsky.actor.profile", "displayName": "VibeKoded", "description": "build in public"}
+    out = bluesky.add_bot_label(prof)
+    assert out["displayName"] == "VibeKoded"           # preserved
+    assert out["description"] == "build in public"     # preserved
+    assert bluesky.has_bot_label(out) is True
+    # Idempotent: adding again doesn't duplicate the value.
+    out2 = bluesky.add_bot_label(out)
+    vals = out2["labels"]["values"]
+    assert [v for v in vals if v.get("val") == "bot"] == [{"val": "bot"}]
+
+
+def test_add_bot_label_keeps_existing_self_labels():
+    prof = {"labels": {"$type": bluesky.SELF_LABELS_TYPE, "values": [{"val": "!no-unauthenticated"}]}}
+    out = bluesky.add_bot_label(prof)
+    vals = {v["val"] for v in out["labels"]["values"]}
+    assert vals == {"!no-unauthenticated", "bot"}      # both kept
+
+
+def test_ensure_bot_label_already_set_is_noop(monkeypatch):
+    monkeypatch.setattr(
+        bluesky, "get_profile_record",
+        lambda session: {"cid": "c", "value": {"labels": {"values": [{"val": "bot"}]}}},
+    )
+    # If putRecord were called it would hit the network; it must NOT be.
+    monkeypatch.setattr(bluesky, "_request", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no put")))
+    assert bluesky.ensure_bot_label(SESSION)["status"] == "already_set"
+
+
+def test_ensure_bot_label_sets_when_missing(monkeypatch):
+    monkeypatch.setattr(
+        bluesky, "get_profile_record",
+        lambda session: {"cid": "oldcid", "value": {"displayName": "VibeKoded"}},
+    )
+    captured = {}
+    def fake_request(method, url, headers=None, payload=None, timeout=30):
+        captured["url"] = url
+        captured["payload"] = payload
+        return {"cid": "newcid"}
+    monkeypatch.setattr(bluesky, "_request", fake_request)
+    res = bluesky.ensure_bot_label(SESSION)
+    assert res["status"] == "set"
+    assert captured["url"] == bluesky.PUT_RECORD_EP
+    assert captured["payload"]["collection"] == "app.bsky.actor.profile"
+    assert captured["payload"]["rkey"] == "self"
+    assert captured["payload"]["swapRecord"] == "oldcid"   # optimistic concurrency
+    assert bluesky.has_bot_label(captured["payload"]["record"]) is True
+    assert captured["payload"]["record"]["displayName"] == "VibeKoded"  # preserved
