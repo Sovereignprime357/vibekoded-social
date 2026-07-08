@@ -1,0 +1,23 @@
+[project]
+name = "vibekoded-slack-trigger"
+version = "0.1.0"
+requires-python = ">=3.12"
+# The Slack→GitHub webhook (api/slack_events.py + slack_trigger.py) is STDLIB-ONLY
+# (hmac, urllib, json, http.server). Declaring NO dependencies here keeps the bot's
+# runtime deps (requests, pytest — in requirements.txt) OUT of the Vercel function
+# build, so the function bundle stays tiny and isolated.
+#
+# NOTE: this does NOT affect GitHub Actions, which installs the bot explicitly via
+# `pip install -r requirements.txt`. pyproject.toml is read only by Vercel here.
+dependencies = []
+
+[tool.vercel]
+# Vercel's newer Python builder (CLI 54.x) requires the entrypoint named explicitly
+# when there's no default-filename entrypoint (app.py/index.py/main.py/…). Point it
+# at the BaseHTTPRequestHandler subclass `handler` in api/slack_events.py — the exact
+# fix the build error prescribes, and a supported entrypoint shape per Vercel's docs
+# ("`handler` for Python serverless functions that use BaseHTTPRequestHandler").
+#
+# The handler is PATH-AGNOSTIC (do_POST ignores the request path), so the function
+# still serves the existing Request URL `…/api/slack_events` — no URL churn.
+entrypoint = "api.slack_events:handler"
