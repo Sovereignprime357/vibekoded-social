@@ -1,9 +1,9 @@
 """
 act_tick.py — entrypoint for the ACT layer (SPEC-v2 T1.5 / SPEC-v3).
 
-Runs on the scout-act cron (hourly, offset AFTER the scout tick). For each
-surfaced item the operator has 👍'd in Slack, it executes the proposed action
-and logs it. The thumbsup IS the approval (I-HUMAN-GATE) — nothing is ever
+Runs on the scout-act cron (every 15 min, so an operator 👍 is acted on within
+~15 min; scout-tick still surfaces hourly). For each surfaced item the operator
+has 👍'd in Slack, it executes the proposed action and logs it. The thumbsup IS the approval (I-HUMAN-GATE) — nothing is ever
 autonomous in this build.
 
 Loop:

@@ -1,8 +1,8 @@
 name: scout-act
 
-# The ACT layer (SPEC-v2 T1.5 / SPEC-v3). Runs hourly, OFFSET AFTER scout-tick
-# (scout at :23, act at :43), so each tick acts on items scout surfaced earlier.
-# For every surfaced item the operator 👍'd in Slack, it executes the proposed
+# The ACT layer (SPEC-v2 T1.5 / SPEC-v3). Runs every 15 minutes so an operator
+# 👍 is acted on within ~15 min (scout-tick still surfaces hourly at :23). For
+# every surfaced item the operator 👍'd in Slack, it executes the proposed
 # action (like / repost / follow / reply) against Bluesky and logs it.
 #
 # The operator's thumbsup IS the approval (I-HUMAN-GATE) — nothing autonomous.
@@ -16,7 +16,7 @@ name: scout-act
 # It becomes live automatically once SLACK_BOT_TOKEN + SLACK_CHANNEL_ID exist.
 on:
   schedule:
-    - cron: "43 * * * *"   # hourly, offset to :43 (20 min after scout's :23)
+    - cron: "*/15 * * * *"   # every 15 min, so an operator 👍 is acted on within ~15 min
   workflow_dispatch: {}     # run on demand from the Actions tab
 
 # Never let two ticks race on the act-log commit-back, and don't cancel a tick
