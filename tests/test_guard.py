@@ -257,6 +257,46 @@ def test_extra_terms_are_loaded_and_enforced(monkeypatch):
         importlib.reload(guard)
 
 
+# ---------------------------------------------------------------------------
+# SPEC-v3 I-PRIVACY: client/project terms load from NON-committed sources
+# (GUARD_EXTRA_TERMS env secret + a gitignored file), never from the repo.
+# ---------------------------------------------------------------------------
+
+
+def test_guard_extra_terms_env_enforced(monkeypatch):
+    # Comma- and newline-separated, with a comment line that must be ignored.
+    monkeypatch.setenv("GUARD_EXTRA_TERMS", "asphalt solutions, bob\n# a comment\njustin")
+    ok, _ = guard.check("we finished the asphalt solutions dashboard")
+    assert ok is False, "multi-word client term from GUARD_EXTRA_TERMS not enforced"
+    assert guard.check("shipped it for bob today")[0] is False
+    assert guard.check("justin signed off")[0] is False
+    # The comment line must not turn into a matchable term.
+    assert guard.check("a comment about clean code")[0] is True
+
+
+def test_guard_extra_terms_file_enforced(tmp_path, monkeypatch):
+    f = tmp_path / "guard-extra-terms.txt"
+    f.write_text("# client terms — never commit\nacme-roads\nnightingale\n", encoding="utf-8")
+    monkeypatch.setenv("GUARD_EXTRA_TERMS_FILE", str(f))
+    assert guard.check("migrated acme-roads to the new stack")[0] is False
+    assert guard.check("nightingale went live")[0] is False
+
+
+def test_guard_extra_terms_missing_file_degrades(monkeypatch):
+    monkeypatch.setenv("GUARD_EXTRA_TERMS_FILE", "/no/such/guard-terms.txt")
+    monkeypatch.delenv("GUARD_EXTRA_TERMS", raising=False)
+    # Missing file must not disable the hardcoded floor or crash.
+    assert guard.check("shayler was here")[0] is False
+    assert guard.check("a clean post about shipping")[0] is True
+
+
+def test_guard_extra_terms_none_set_is_clean(monkeypatch):
+    monkeypatch.delenv("GUARD_EXTRA_TERMS", raising=False)
+    monkeypatch.delenv("GUARD_EXTRA_TERMS_FILE", raising=False)
+    # With no extra sources, ordinary client-ish words are NOT blocked.
+    assert guard.check("we paved a new road for the client today")[0] is True
+
+
 def test_missing_config_module_degrades_gracefully(monkeypatch):
     """
     If config.py can't be imported at all, the guard must still work off

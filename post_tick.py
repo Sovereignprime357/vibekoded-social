@@ -71,6 +71,7 @@ def _log_posted(entry: Dict[str, Any], final_text: str, post_result: Optional[Di
             "ts": _now_iso(),
             "entry_ts": entry.get("ts"),
             "entry_type": entry.get("type"),
+            "pillar": entry.get("pillar"),
             "text": final_text,
             "dry_run": _is_dry_run(),
             "uri": (post_result or {}).get("uri"),
@@ -79,19 +80,52 @@ def _log_posted(entry: Dict[str, Any], final_text: str, post_result: Optional[Di
     )
 
 
+def _recent_pillars(n: int = content_queue.META_WINDOW) -> list:
+    """
+    Read the pillars of the last `n` posted entries, MOST RECENT FIRST, from
+    posted.jsonl. This is the rotation memory that feeds
+    content_queue.get_next_rotated — a post from the same pillar as the last
+    one, or a META within the meta-cap window, gets skipped.
+
+    Legacy posted records (pre-v3) have no `pillar`; they read back as "" and
+    simply don't constrain rotation, which is the intended graceful behavior.
+    """
+    if not os.path.exists(POSTED_LOG):
+        return []
+    rows: list = []
+    try:
+        with open(POSTED_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    pillars = [str(r.get("pillar") or "").strip().lower() for r in rows]
+    return list(reversed(pillars))[:n]
+
+
 def run_tick() -> int:
     """
     Execute one posting tick. Returns a process exit code (0 = clean run,
     1 = failure). Side effects (log writes, mark_used, real post) only
     happen along the paths described in the module docstring above.
     """
-    entry = content_queue.get_next_unused()
+    recent = _recent_pillars()
+    entry = content_queue.get_next_rotated(recent_pillars=recent)
 
     if entry is None:
-        print("[post_tick] no unused queue entries — nothing to do. (I-SUBSTANCE: never fabricate.)")
+        print("[post_tick] no postable queue entry under the pillar-rotation rules — nothing to do. (I-SUBSTANCE: never fabricate; I-PILLAR-MIX: never burst META.)")
         return 0
 
-    print(f"[post_tick] picked entry ts={entry.get('ts')} type={entry.get('type')}")
+    print(
+        f"[post_tick] picked entry ts={entry.get('ts')} type={entry.get('type')} "
+        f"pillar={entry.get('pillar') or '(untagged)'} (recent pillars: {recent or 'none'})"
+    )
 
     try:
         text = generate.generate(entry, kind="post")

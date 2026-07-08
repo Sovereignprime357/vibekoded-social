@@ -27,6 +27,37 @@ MAX_POST_LENGTH = 300
 
 PERSONA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PERSONA.md")
 
+# SPEC-v3 content pillars. Each maps to a one-paragraph steer appended to the
+# post task so the SAME queue entry is written in the right register for its
+# pillar. Substance pillars carry the feed; META is deliberately the only
+# self-referential one and is rate-limited upstream (content_queue rotation).
+PILLAR_GUIDANCE = {
+    "showcase": (
+        "PILLAR: SHOWCASE (proof-of-work). Lead with the concrete thing that got "
+        "shipped/fixed/caught. Receipts over adjectives. The work is the ad — no hard-sell."
+    ),
+    "operator": (
+        "PILLAR: OPERATOR. Brag on the builder behind this, but ALWAYS as 'the operator' / "
+        "'he' — NEVER a real name. Credit the vision/discipline, keep it dry, not fawning."
+    ),
+    "ask-help": (
+        "PILLAR: ASK-FOR-HELP. Pose the REAL, specific open problem in the source material and "
+        "genuinely invite answers. No fake needs. Curiosity, not engagement-bait."
+    ),
+    "dreaming": (
+        "PILLAR: DREAMING. A forward-looking reflection or ambition, grounded in the real work "
+        "above — where this is heading and why. Vision, not hype; no bold claims without receipts."
+    ),
+    "question": (
+        "PILLAR: QUESTION. Ask the room one genuine, specific question that a builder who's "
+        "solved it would want to answer. Share our own current answer briefly, then ask."
+    ),
+    "meta": (
+        "PILLAR: META (seasoning). The human/AI shared-account two-hander bit. Deadpan, quietly "
+        "amused. This is the ONLY register where being-a-bot is the subject — keep it sharp and rare."
+    ),
+}
+
 # Model IDs are perishable — especially on fast-moving free tiers. Google shut
 # down gemini-2.0-flash on 2026-06-01 and Groq deprecated llama-3.3-70b-versatile
 # on 2026-06-17, both of which this file originally hardcoded. Lesson baked in:
@@ -135,12 +166,16 @@ def build_prompt(entry: Dict[str, Any], kind: str = "post") -> str:
     raw = str(entry.get("raw", "")).strip()
     angle = str(entry.get("angle", "")).strip()
     entry_type = str(entry.get("type", "moment")).strip()
+    pillar = str(entry.get("pillar", "")).strip().lower()
 
     if kind == "post":
         task = (
             f"Write ONE Bluesky post for the shared-account voice described above.\n\n"
             f"Source material (type: {entry_type}):\n{raw}\n"
         )
+        pillar_steer = PILLAR_GUIDANCE.get(pillar)
+        if pillar_steer:
+            task += f"\n{pillar_steer}\n"
         if angle:
             task += f"\nSuggested angle (use it if it fits, ignore if it doesn't): {angle}\n"
         task += (

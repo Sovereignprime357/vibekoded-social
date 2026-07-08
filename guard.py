@@ -21,6 +21,7 @@ check(text) -> (ok: bool, reason: str) is the only contract callers need.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Iterable, List, Tuple
 
@@ -53,14 +54,68 @@ FAMILY_TERMS: List[str] = [
 # purely for readability of the merge below.
 HARD_BLOCKLIST: List[str] = PERSONAL_NAMES + FAMILY_TERMS
 
+# ---------------------------------------------------------------------------
+# EXTRA (operator-added) TERMS — client/project-confidential words.
+#
+# CRITICAL (SPEC-v3 I-PRIVACY): this repo is PUBLIC. Client names, project
+# code-names, and any confidential term the brain knows must NEVER be committed
+# here — putting them in a tracked file would leak the very thing the guard
+# exists to protect. So the extra terms load ONLY from non-committed sources:
+#
+#   1. GUARD_EXTRA_TERMS  — env var (a GitHub *secret* in CI), comma- OR
+#                           newline-separated. This is the primary channel.
+#   2. a gitignored FILE  — default guard-extra-terms.txt beside this module
+#                           (path overridable via GUARD_EXTRA_TERMS_FILE), one
+#                           term per line, '#' comments allowed. For local runs.
+#   3. config.EXTRA_TERMS — legacy in-repo list, kept for backward compat. It
+#                           should stay EMPTY in this public repo; real terms go
+#                           in the two channels above.
+#
+# All three are merged. Every loader is best-effort and NEVER raises — a broken
+# source degrades to "that source contributes nothing", never to "no guard".
+# The hardcoded floor above always applies regardless.
+# ---------------------------------------------------------------------------
 
-def _load_extra_terms() -> List[str]:
-    """
-    Load operator-added EXTRA_TERMS from config, if config.py / config.json
-    is present. Never raises — a missing or malformed config file degrades
-    to "no extra terms" rather than crashing the guard (the hardcoded floor
-    above still applies regardless).
-    """
+_DEFAULT_EXTRA_TERMS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "guard-extra-terms.txt"
+)
+
+
+def _split_terms(blob: str) -> List[str]:
+    """Split a comma- or newline-separated blob into cleaned, non-empty terms."""
+    parts = re.split(r"[,\n\r]+", blob or "")
+    out: List[str] = []
+    for p in parts:
+        t = p.strip()
+        if t and not t.startswith("#"):
+            out.append(t)
+    return out
+
+
+def _load_extra_terms_env() -> List[str]:
+    """Terms from the GUARD_EXTRA_TERMS env var (the CI secret). Never raises."""
+    try:
+        return _split_terms(os.environ.get("GUARD_EXTRA_TERMS", ""))
+    except Exception:
+        print("[guard] WARNING: GUARD_EXTRA_TERMS failed to parse; ignoring that source.")
+        return []
+
+
+def _load_extra_terms_file() -> List[str]:
+    """Terms from the gitignored guard-extra-terms.txt (local dev). Never raises."""
+    path = os.environ.get("GUARD_EXTRA_TERMS_FILE", "").strip() or _DEFAULT_EXTRA_TERMS_FILE
+    try:
+        if not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            return _split_terms(f.read())
+    except Exception:
+        print(f"[guard] WARNING: extra-terms file {path!r} failed to load; ignoring that source.")
+        return []
+
+
+def _load_extra_terms_config() -> List[str]:
+    """Legacy in-repo config.EXTRA_TERMS (should be empty in this public repo)."""
     try:
         from config import EXTRA_TERMS  # type: ignore
 
@@ -70,16 +125,27 @@ def _load_extra_terms() -> List[str]:
     except ImportError:
         return []
     except Exception:
-        # Fail closed on the GUARD's availability, not on individual posts:
-        # a broken config must not silently disable the extra-terms layer.
-        # We can't raise from a module-level loader without breaking every
-        # import of this file, so we degrade to empty and let the hardcoded
-        # floor stand. Surface loudly in logs so it gets noticed.
         print(
             "[guard] WARNING: EXTRA_TERMS in config.py failed to load cleanly; "
-            "continuing with hardcoded blocklist only."
+            "continuing without that source."
         )
         return []
+
+
+def _load_extra_terms() -> List[str]:
+    """
+    Merge all non-committed extra-term sources (env secret + gitignored file +
+    legacy config). De-duped case-insensitively, order preserved. Never raises.
+    """
+    merged = _load_extra_terms_env() + _load_extra_terms_file() + _load_extra_terms_config()
+    seen: set = set()
+    out: List[str] = []
+    for t in merged:
+        key = t.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(t)
+    return out
 
 
 def _compile_patterns(terms: Iterable[str]) -> List[Tuple[str, "re.Pattern[str]"]]:
