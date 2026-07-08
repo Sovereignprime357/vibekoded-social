@@ -101,3 +101,38 @@ def test_surface_all_skips_already_surfaced(tmp_path, monkeypatch):
 
 def test_surface_all_empty_list():
     assert surface.surface_all([], dry_run=True) == 0
+
+
+# --- bot-token (chat.postMessage) path captures ts for the ACT layer --------
+
+def test_surface_all_bot_token_records_ts_and_act_fields(tmp_path, monkeypatch):
+    ledger = str(tmp_path / "surfaced.jsonl")
+    monkeypatch.setattr(surface, "SURFACED_PATH", ledger)
+    # Pretend chat.postMessage succeeded and returned a message ts.
+    monkeypatch.setattr(surface, "_post_slack_web", lambda text, token, channel, timeout=15: "1700000000.000100")
+
+    n = surface.surface_all(
+        [_item(uri="at://d/app.bsky.feed.post/42")],
+        dry_run=False, bot_token="xoxb-test", channel="C123",
+    )
+    assert n == 1
+    with open(ledger, encoding="utf-8") as f:
+        rec = json.loads(f.readline())
+    # Everything the ACT layer needs to act without re-querying triage:
+    assert rec["slack_ts"] == "1700000000.000100"
+    assert rec["slack_channel"] == "C123"
+    assert rec["uri"] == "at://d/app.bsky.feed.post/42"
+    assert rec["cid"] == "c"
+    assert rec["author_did"] == "did:plc:x"
+    assert rec["action"] == "reply"
+
+
+def test_surface_all_bot_token_failure_logs_without_ts(tmp_path, monkeypatch):
+    ledger = str(tmp_path / "surfaced.jsonl")
+    monkeypatch.setattr(surface, "SURFACED_PATH", ledger)
+    # chat.postMessage failed (returned None) -> logged, but not actionable.
+    monkeypatch.setattr(surface, "_post_slack_web", lambda *a, **k: None)
+    surface.surface_all([_item()], dry_run=False, bot_token="xoxb-test", channel="C123")
+    with open(ledger, encoding="utf-8") as f:
+        rec = json.loads(f.readline())
+    assert rec["slack_ts"] is None

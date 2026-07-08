@@ -67,7 +67,13 @@ jobs:
           # not once per post) to stay under the free tier's tokens/minute cap.
           # ~15 covers a full 60-candidate tick in ~4 calls; tune without a code push.
           SCOUT_TRIAGE_BATCH_SIZE: ${{ vars.SCOUT_TRIAGE_BATCH_SIZE || '15' }}
-          # The comms + approval layer.
+          # The comms + approval layer. Prefer the bot token (chat.postMessage)
+          # so each surfaced message's `ts` is captured — that's the handle the
+          # scout-act tick polls for the operator's 👍. Falls back to the legacy
+          # incoming webhook if the bot token isn't set yet (those items carry no
+          # ts and so aren't actionable — safe-degrade, scout still works).
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           # Scout has its OWN pause switch, independent of post-tick's DRY_RUN,
           # so posting and scouting can be toggled separately. Set repo

@@ -254,6 +254,80 @@ def reply(
 
 
 # ---------------------------------------------------------------------------
+# Engagement actions (the ACT layer, SPEC-v2 T1.5 / SPEC-v3).
+#
+# like / repost / follow are createRecord calls in three collections. They take
+# NO model — Claude is never touched for these (only reply/quote drafting is).
+# Every one of these is a WRITE and is only ever reached from act_tick.py AFTER
+# an explicit operator thumbsup in Slack (I-HUMAN-GATE). None is invoked by any
+# test in tests/ — the tests assert the PAYLOAD SHAPE via build helpers, never
+# the network.
+# ---------------------------------------------------------------------------
+
+LIKE_COLLECTION = "app.bsky.feed.like"
+REPOST_COLLECTION = "app.bsky.feed.repost"
+FOLLOW_COLLECTION = "app.bsky.graph.follow"
+
+
+def _create_record(collection: str, record: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        "repo": session["did"],
+        "collection": collection,
+        "record": record,
+    }
+    return _request("POST", CREATE_RECORD_EP, headers=_auth_headers(session), payload=payload)
+
+
+def build_like_record(subject_uri: str, subject_cid: str) -> Dict[str, Any]:
+    """The app.bsky.feed.like record shape. Split out so tests can assert it without a network call."""
+    return {
+        "$type": LIKE_COLLECTION,
+        "subject": {"uri": subject_uri, "cid": subject_cid},
+        "createdAt": _now_iso(),
+    }
+
+
+def build_repost_record(subject_uri: str, subject_cid: str) -> Dict[str, Any]:
+    """The app.bsky.feed.repost record shape."""
+    return {
+        "$type": REPOST_COLLECTION,
+        "subject": {"uri": subject_uri, "cid": subject_cid},
+        "createdAt": _now_iso(),
+    }
+
+
+def build_follow_record(subject_did: str) -> Dict[str, Any]:
+    """The app.bsky.graph.follow record shape (subject is a bare DID string, not a strong ref)."""
+    return {
+        "$type": FOLLOW_COLLECTION,
+        "subject": subject_did,
+        "createdAt": _now_iso(),
+    }
+
+
+def like(subject_uri: str, subject_cid: str, session: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Like a post: createRecord on app.bsky.feed.like with a strong ref to the
+    subject (uri + cid). Returns the createRecord response (uri/cid of OUR like
+    record — log it so an unlike is possible later). Real network call.
+    """
+    session = session or create_session()
+    return _create_record(LIKE_COLLECTION, build_like_record(subject_uri, subject_cid), session)
+
+
+def repost(subject_uri: str, subject_cid: str, session: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Repost a post: createRecord on app.bsky.feed.repost (strong ref subject). Real network call."""
+    session = session or create_session()
+    return _create_record(REPOST_COLLECTION, build_repost_record(subject_uri, subject_cid), session)
+
+
+def follow(subject_did: str, session: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Follow an account: createRecord on app.bsky.graph.follow (subject is the DID). Real network call."""
+    session = session or create_session()
+    return _create_record(FOLLOW_COLLECTION, build_follow_record(subject_did), session)
+
+
+# ---------------------------------------------------------------------------
 # Notifications
 # ---------------------------------------------------------------------------
 
