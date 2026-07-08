@@ -1,0 +1,90 @@
+name: scout-act
+
+# The ACT layer (SPEC-v2 T1.5 / SPEC-v3). Runs hourly, OFFSET AFTER scout-tick
+# (scout at :23, act at :43), so each tick acts on items scout surfaced earlier.
+# For every surfaced item the operator 👍'd in Slack, it executes the proposed
+# action (like / repost / follow / reply) against Bluesky and logs it.
+#
+# The operator's thumbsup IS the approval (I-HUMAN-GATE) — nothing autonomous.
+#
+# Safe-degrade ladder (harmless at every rung — this is why it can ship before
+# the operator finishes the Slack-app setup):
+#   - no SLACK_BOT_TOKEN   -> act_tick logs "no SLACK_BOT_TOKEN, skipping" and
+#     does nothing. The existing scout/surface loop is untouched.
+#   - no SLACK_CHANNEL_ID  -> same (can't poll reactions without a channel).
+#   - ACT_DRY_RUN=1 var    -> polls (a read) but makes NO Bluesky write.
+# It becomes live automatically once SLACK_BOT_TOKEN + SLACK_CHANNEL_ID exist.
+on:
+  schedule:
+    - cron: "43 * * * *"   # hourly, offset to :43 (20 min after scout's :23)
+  workflow_dispatch: {}     # run on demand from the Actions tab
+
+# Never let two ticks race on the act-log commit-back, and don't cancel a tick
+# mid-flight (it may have already executed an action and needs to log it).
+concurrency:
+  group: vibekoded-social-act-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # required to commit act-log.jsonl back
+
+jobs:
+  act:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run act_tick
+        env:
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
+          # Slack app (operator is setting this up now). The bot token lets us
+          # read reactions (reactions.get) on the messages surface.py posted.
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          # Optional but recommended: only THIS user's thumbsup counts as
+          # approval (I-HUMAN-GATE). If unset, any thumbsup in the channel counts.
+          SLACK_OPERATOR_USER_ID: ${{ secrets.SLACK_OPERATOR_USER_ID }}
+          # Reply drafts are written in PERSONA voice by the paid model — the
+          # only place ACT touches Claude, and only after an approval.
+          GEN_MODEL: ${{ vars.GEN_MODEL || 'anthropic' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Privacy guard extended terms (client/project-confidential) — a secret,
+          # NEVER committed to this public repo. Guards every reply, fail-closed.
+          GUARD_EXTRA_TERMS: ${{ secrets.GUARD_EXTRA_TERMS }}
+          # Per-class daily caps (I-SELECTIVE). Tune without a code push.
+          ACT_CAP_LIKE: ${{ vars.ACT_CAP_LIKE || '20' }}
+          ACT_CAP_REPOST: ${{ vars.ACT_CAP_REPOST || '10' }}
+          ACT_CAP_FOLLOW: ${{ vars.ACT_CAP_FOLLOW || '10' }}
+          ACT_CAP_REPLY: ${{ vars.ACT_CAP_REPLY || '5' }}
+          # Act has its OWN pause switch, independent of post/scout dry-run.
+          DRY_RUN: ${{ vars.ACT_DRY_RUN || '0' }}
+        run: python act_tick.py
+
+      - name: Commit updated act-log
+        # act_tick appends to act-log.jsonl (I-LOGGED + the never-double-fire
+        # ledger). Ephemeral runners start from the last COMMIT, so this must be
+        # committed back or the next tick would re-fire already-done actions.
+        run: |
+          git config user.name "vibekoded-social-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add act-log.jsonl
+          if git diff --cached --quiet; then
+            echo "No act-log changes to commit."
+          else
+            git commit -m "chore(act-tick): update act log [skip ci]"
+            git pull --rebase origin HEAD
+            git push
+          fi

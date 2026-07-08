@@ -13,8 +13,11 @@
 guard-extra-terms.txt
 
 # --- State files: INTENTIONALLY NOT IGNORED -------------------------------
-# content-queue.jsonl, posted.jsonl, skipped.jsonl, handled.jsonl, and
-# drafts.jsonl are all TRACKED in git, not ignored. GitHub Actions runners
+# content-queue.jsonl, posted.jsonl, skipped.jsonl, handled.jsonl,
+# drafts.jsonl, scout-surfaced.jsonl, and act-log.jsonl are all TRACKED in git,
+# not ignored (act-log.jsonl is the ACT layer's never-double-fire ledger — if
+# it were ignored, the next tick would re-execute already-approved actions).
+# GitHub Actions runners
 # are ephemeral — every scheduled run starts from a fresh checkout of the
 # last COMMIT, so any state that only lives on runner-local disk (marking a
 # queue entry used, recording a post happened, deduping a notification id)

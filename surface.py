@@ -103,14 +103,32 @@ def load_surfaced_uris(path: str = SURFACED_PATH) -> Set[str]:
     return seen
 
 
-def _append_surfaced(item: Dict[str, Any], path: str = SURFACED_PATH) -> None:
+def _append_surfaced(
+    item: Dict[str, Any],
+    path: str = SURFACED_PATH,
+    slack_ts: Optional[str] = None,
+    slack_channel: Optional[str] = None,
+) -> None:
+    """
+    Append one audit record (I-LOGGED). SPEC-v2 T1.5 requires enough here for the
+    ACT layer to execute later WITHOUT re-querying triage: the Bluesky post's
+    uri+cid and the author DID (for like/repost/follow), the proposed action, and
+    — critically — the Slack message `ts` + channel, which are the handle
+    act_tick.py polls for the operator's thumbsup reaction.
+    """
     rec = {
         "uri": item.get("uri"),
+        "cid": item.get("cid"),
         "author_handle": item.get("author_handle"),
+        "author_did": item.get("author_did"),
         "lane_id": item.get("lane_id"),
         "action": item.get("action"),
         "confidence": item.get("confidence"),
         "why": item.get("why"),
+        "text": item.get("text"),
+        "url": item.get("url"),
+        "slack_ts": slack_ts,
+        "slack_channel": slack_channel,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     with open(path, "a", encoding="utf-8") as f:
@@ -122,8 +140,16 @@ def _append_surfaced(item: Dict[str, Any], path: str = SURFACED_PATH) -> None:
 # ---------------------------------------------------------------------------
 
 
+SLACK_POST_MESSAGE_EP = "https://slack.com/api/chat.postMessage"
+
+
 def _post_slack(text: str, webhook_url: str, timeout: int = 15) -> bool:
-    """Best-effort POST to a Slack incoming webhook. Returns success; never raises."""
+    """
+    Best-effort POST to a Slack incoming webhook (legacy fallback). Returns
+    success; never raises. This path captures NO message ts, so items surfaced
+    via the webhook can't be acted on by act_tick — it's the safe-degrade rung
+    for when SLACK_BOT_TOKEN isn't set yet.
+    """
     try:
         resp = requests.post(webhook_url, json={"text": text}, timeout=timeout)
         if resp.status_code >= 400:
@@ -133,6 +159,31 @@ def _post_slack(text: str, webhook_url: str, timeout: int = 15) -> bool:
     except requests.RequestException as exc:
         print(f"[surface] Slack POST error (non-fatal): {exc}")
         return False
+
+
+def _post_slack_web(text: str, token: str, channel: str, timeout: int = 15) -> Optional[str]:
+    """
+    Post via the Slack Web API (chat.postMessage) with a bot token, so we get the
+    message `ts` back — the anchor act_tick.py polls for the operator's thumbsup
+    (SPEC-v2 T1.5). Returns the message ts on success, or None on any failure
+    (never raises — a Slack hiccup must not crash the scout tick).
+    """
+    try:
+        resp = requests.post(
+            SLACK_POST_MESSAGE_EP,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
+            json={"channel": channel, "text": text},
+            timeout=timeout,
+        )
+        data = resp.json() if resp.content else {}
+    except (requests.RequestException, ValueError) as exc:
+        print(f"[surface] Slack chat.postMessage error (non-fatal): {exc}")
+        return None
+    if not data.get("ok"):
+        # Slack returns 200 with ok:false + an error string (e.g. not_in_channel).
+        print(f"[surface] Slack chat.postMessage rejected: {data.get('error', resp.text[:120])}")
+        return None
+    return data.get("ts")
 
 
 # ---------------------------------------------------------------------------
@@ -145,10 +196,19 @@ def surface_all(
     webhook_url: Optional[str] = None,
     dry_run: Optional[bool] = None,
     surfaced_path: Optional[str] = None,
+    bot_token: Optional[str] = None,
+    channel: Optional[str] = None,
 ) -> int:
     """
     Surface each item to Slack (or print in DRY_RUN). Skips any URI already in
     the audit ledger. Returns the number of items actually surfaced this call.
+
+    Transport ladder (first that applies wins), per SPEC-v2 T1.5:
+      1. DRY_RUN            -> print only, no ledger write (repeatable preview).
+      2. bot_token+channel  -> chat.postMessage; capture the message `ts` so the
+                               ACT layer can poll for the operator's thumbsup.
+      3. webhook_url        -> legacy incoming webhook (NO ts; not actionable).
+      4. nothing configured -> print to the run log (still logged to the ledger).
 
     surfaced_path resolves at CALL time (default: the module SURFACED_PATH) and
     is threaded explicitly into the ledger helpers — never relying on their
@@ -161,6 +221,8 @@ def surface_all(
 
     dry_run = _is_dry_run() if dry_run is None else dry_run
     webhook_url = webhook_url if webhook_url is not None else os.environ.get("SLACK_WEBHOOK_URL", "").strip()
+    bot_token = bot_token if bot_token is not None else os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    channel = channel if channel is not None else os.environ.get("SLACK_CHANNEL_ID", "").strip()
     surfaced_path = surfaced_path or SURFACED_PATH
     already = load_surfaced_uris(surfaced_path)
 
@@ -171,23 +233,32 @@ def surface_all(
             continue
 
         text = format_item(item)
+        slack_ts: Optional[str] = None
+        slack_channel: Optional[str] = None
 
         if dry_run:
             print("---- [DRY_RUN] would surface to Slack ----")
             print(text)
-        elif not webhook_url:
-            # No webhook configured but not dry-run: print + still log so we
-            # don't silently drop, and the operator sees it in the run output.
-            print("[surface] SLACK_WEBHOOK_URL not set; printing instead:")
-            print(text)
-        else:
+        elif bot_token and channel:
+            slack_ts = _post_slack_web(text, bot_token, channel)
+            slack_channel = channel
+            if slack_ts:
+                print(f"[surface] posted to Slack channel {channel} ts={slack_ts} (actionable)")
+            else:
+                print("[surface] chat.postMessage failed; item logged without a ts (not actionable)")
+        elif webhook_url:
             _post_slack(text, webhook_url)
+        else:
+            # Nothing configured but not dry-run: print + still log so we don't
+            # silently drop, and the operator sees it in the run output.
+            print("[surface] no SLACK_BOT_TOKEN / SLACK_WEBHOOK_URL set; printing instead:")
+            print(text)
 
         # Dry-run is side-effect-free: no ledger write, so the operator can
         # re-run the preview as many times as they like without "consuming"
         # posts (scout also skips state/seen persistence in dry-run).
         if not dry_run:
-            _append_surfaced(item, surfaced_path)
+            _append_surfaced(item, surfaced_path, slack_ts=slack_ts, slack_channel=slack_channel)
         if uri:
             already.add(uri)
         count += 1
