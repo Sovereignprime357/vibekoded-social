@@ -105,7 +105,7 @@ jobs:
           # Stage the FULL state-file superset (unchanged files are no-ops on the
           # ephemeral runner) so no state a run writes is ever left unstaged.
           git add content-queue.jsonl posted.jsonl skipped.jsonl handled.jsonl \
-                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl
+                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl ops-insight-seen.jsonl
           if git diff --cached --quiet; then
             echo "No act-log changes to commit."
           else

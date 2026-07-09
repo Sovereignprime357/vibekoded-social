@@ -335,9 +335,10 @@ def _call_gemini(prompt: str, api_key: str, temperature: float = 0.9, max_tokens
         raise GenerationError(f"unexpected Gemini response shape: {result!r}") from exc
 
 
-def _call_groq(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: int = 200) -> str:
+def _call_groq(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: int = 200,
+               model_id: Optional[str] = None) -> str:
     payload = {
-        "model": GROQ_MODEL,
+        "model": model_id or GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -353,9 +354,10 @@ def _call_groq(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: 
         raise GenerationError(f"unexpected Groq response shape: {result!r}") from exc
 
 
-def _call_anthropic(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: int = 300) -> str:
+def _call_anthropic(prompt: str, api_key: str, temperature: float = 0.9, max_tokens: int = 300,
+                    model_id: Optional[str] = None) -> str:
     payload = {
-        "model": ANTHROPIC_MODEL,
+        "model": model_id or ANTHROPIC_MODEL,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "messages": [{"role": "user", "content": prompt}],
@@ -451,6 +453,7 @@ def complete(
     temperature: float = 0.2,
     max_tokens: int = 512,
     retries: int = 2,
+    model_id: Optional[str] = None,
 ) -> str:
     """
     Generic single-shot completion for callers that are NOT writing a post —
@@ -493,11 +496,13 @@ def complete(
     for attempt in range(1, attempts + 1):
         try:
             if model == "gemini":
+                # gemini bakes the model into the endpoint URL; model_id override
+                # is not supported for it (ops-insight uses anthropic/groq).
                 out = _call_gemini(prompt, api_key, temperature=temperature, max_tokens=max_tokens)
             elif model == "groq":
-                out = _call_groq(prompt, api_key, temperature=temperature, max_tokens=max_tokens)
+                out = _call_groq(prompt, api_key, temperature=temperature, max_tokens=max_tokens, model_id=model_id)
             else:  # anthropic
-                out = _call_anthropic(prompt, api_key, temperature=temperature, max_tokens=max_tokens)
+                out = _call_anthropic(prompt, api_key, temperature=temperature, max_tokens=max_tokens, model_id=model_id)
             if out and out.strip():
                 return out.strip()
             last_exc = GenerationError("model returned empty output")

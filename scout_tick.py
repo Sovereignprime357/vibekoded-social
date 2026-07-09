@@ -57,6 +57,18 @@ def main() -> int:
         print("[scout_tick] no new candidates this tick; done")
         return 0
 
+    # Ops-Insight Harvest (SPEC-v6): a SECOND, review-only lens over the SAME
+    # candidates (reuse-only — no new scan). Runs on ALL scanned candidates,
+    # independent of the mission triage below (an off-mission post can still carry
+    # a transferable technique). Wrapped so it can NEVER break the scout tick.
+    try:
+        import ops_insight
+        n_ins = ops_insight.harvest(candidates, dry_run=dry)
+        if n_ins:
+            print(f"[scout_tick] ops-insight: posted {n_ins} brief(s) to the review channel")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[scout_tick] ops-insight harvest errored (non-fatal): {exc!r}")
+
     surfaced_items = triage.classify_all(candidates)
     if not surfaced_items:
         print("[scout_tick] triage found nothing on-mission this tick; done")

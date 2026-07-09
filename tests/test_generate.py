@@ -88,6 +88,35 @@ def test_complete_exhausted_429_raises(monkeypatch):
         generate.complete("hi", model="groq", retries=1)
 
 
+# --- model_id override (SPEC-v6 bounded stronger extract) -------------------
+
+def test_complete_model_id_overrides_payload_model(monkeypatch):
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=30):
+        captured["model"] = (json or {}).get("model")
+        return _FakeResp(200, json_data={"content": [{"type": "text", "text": "ok"}]})
+
+    monkeypatch.setattr(generate.requests, "post", fake_post)
+    out = generate.complete("hi", model="anthropic", model_id="claude-sonnet-5")
+    assert out == "ok"
+    assert captured["model"] == "claude-sonnet-5"   # override used, not ANTHROPIC_MODEL default
+
+
+def test_complete_no_model_id_uses_default(monkeypatch):
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    captured = {}
+    monkeypatch.setattr(generate.requests, "post",
+                        lambda url, json=None, headers=None, timeout=30: (
+                            captured.update(model=(json or {}).get("model")),
+                            _FakeResp(200, json_data={"content": [{"type": "text", "text": "ok"}]}))[1])
+    generate.complete("hi", model="anthropic")
+    assert captured["model"] == generate.ANTHROPIC_MODEL   # falls back to the module default
+
+
 # --- SPEC-v3 pillar-aware prompt assembly -----------------------------------
 
 def test_build_prompt_injects_pillar_steer():

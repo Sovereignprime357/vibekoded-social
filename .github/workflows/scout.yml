@@ -87,6 +87,13 @@ jobs:
           SLACK_CHANNEL_LIKES: ${{ vars.SLACK_CHANNEL_LIKES || 'C0BFZGBNFEH' }}
           SLACK_CHANNEL_REPLIES: ${{ vars.SLACK_CHANNEL_REPLIES || 'C0BG4NSKSQZ' }}
           SLACK_CHANNEL_REPOSTS: ${{ vars.SLACK_CHANNEL_REPOSTS || 'C0BGX5UHJ0G' }}
+          # Ops-Insight Harvest (SPEC-v6): review-only knowledge lens over the SAME
+          # candidates. Posts briefs to the ops-intel channel (not secret -> default;
+          # bot must be invited). Cheap flag (anthropic haiku) + bounded deep extract.
+          SLACK_CHANNEL_OPS_INTEL: ${{ vars.SLACK_CHANNEL_OPS_INTEL || 'C0BGEB5FNGZ' }}
+          OPS_INSIGHT_FLAG_MODEL: ${{ vars.OPS_INSIGHT_FLAG_MODEL || 'anthropic' }}
+          OPS_INSIGHT_MODEL: ${{ vars.OPS_INSIGHT_MODEL }}          # optional stronger extract model id
+          OPS_INSIGHT_MAX_PER_TICK: ${{ vars.OPS_INSIGHT_MAX_PER_TICK || '3' }}
           # Scout has its OWN pause switch, independent of post-tick's DRY_RUN,
           # so posting and scouting can be toggled separately. Set repo
           # variable SCOUT_DRY_RUN=1 for preview-only.
@@ -103,7 +110,7 @@ jobs:
           # Stage the FULL state-file superset (unchanged files are no-ops on the
           # ephemeral runner) so no state a run writes is ever left unstaged.
           git add content-queue.jsonl posted.jsonl skipped.jsonl handled.jsonl \
-                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl
+                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl ops-insight-seen.jsonl
           if git diff --cached --quiet; then
             echo "No scout state changes to commit."
           else
