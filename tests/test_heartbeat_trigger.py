@@ -45,6 +45,25 @@ def test_no_secret_configured_never_authorizes():
     assert ht.verify_token("anything", None) is False
 
 
+def test_stored_secret_whitespace_is_tolerated():
+    # The copy-paste trap: a trailing newline / stray space in the Vercel env value
+    # must NOT cause a 401. Both sides are stripped, so these all match.
+    assert ht.verify_token(f"Bearer {SECRET}", f"{SECRET}\n") is True
+    assert ht.verify_token(f"Bearer {SECRET}", f"  {SECRET}  ") is True
+    assert ht.verify_token(SECRET, f"{SECRET}\r\n") is True
+
+
+def test_stored_secret_only_whitespace_still_fails_closed():
+    # A secret that is *only* whitespace normalizes to empty -> never authorizes.
+    assert ht.verify_token("Bearer x", "   \n") is False
+
+
+def test_internal_chars_still_must_match_exactly():
+    # Stripping is OUTER-only: an internal difference still fails (no weakening).
+    assert ht.verify_token("Bearer abc def", "abc  def") is False
+    assert ht.verify_token(f"Bearer {SECRET}", SECRET.upper()) is False  # case-sensitive
+
+
 # --- dispatch payload -------------------------------------------------------
 
 def test_build_dispatch_payload_shape():
