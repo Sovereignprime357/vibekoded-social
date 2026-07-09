@@ -30,10 +30,16 @@ def verify_token(provided: Optional[str], expected: Optional[str]) -> bool:
     """
     if not expected or not provided:
         return False
+    # Normalize BOTH sides' surrounding whitespace. The provided token was already
+    # stripped; strip the stored secret too so a trailing newline / stray space in
+    # the env value (classic copy-paste artifact) can't cause a spurious 401. This
+    # does NOT weaken the check: whitespace isn't intended secret entropy, both
+    # sides are normalized identically, and the compare stays constant-time.
+    expected = expected.strip()
     token = provided.strip()
     if token[:7].lower() == "bearer ":
         token = token[7:].strip()
-    if not token:
+    if not expected or not token:
         return False
     try:
         return hmac.compare_digest(token, expected)

@@ -48,6 +48,17 @@ def test_signature_tampered_body_fails():
     assert slack_trigger.verify_signature(SECRET, ts, '{"x":2}', sig, now=NOW) is False
 
 
+def test_signing_secret_whitespace_is_tolerated():
+    # A trailing newline / space in the stored SLACK_SIGNING_SECRET (copy-paste)
+    # must still verify: the signature was computed with the clean secret, and the
+    # code strips the stored secret before keying the HMAC.
+    ts = str(int(NOW))
+    body = '{"type":"event_callback"}'
+    sig = _sign(SECRET, ts, body)  # signed with the clean secret (as Slack does)
+    assert slack_trigger.verify_signature(f"{SECRET}\n", ts, body, sig, now=NOW) is True
+    assert slack_trigger.verify_signature(f"  {SECRET}  ", ts, body, sig, now=NOW) is True
+
+
 def test_signature_stale_timestamp_fails():
     ts = str(int(NOW) - 10 * 60)  # 10 min old -> outside the 5-min window (replay)
     body = '{"x":1}'

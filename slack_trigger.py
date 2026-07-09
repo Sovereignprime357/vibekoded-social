@@ -86,6 +86,11 @@ def verify_signature(
     Never raises — an exception path returns False (still fail-closed).
     """
     try:
+        # Strip the stored signing secret: a trailing newline / stray space in the
+        # env value (copy-paste artifact) would otherwise change the HMAC and 401
+        # every request. Whitespace isn't secret entropy; the HMAC stays keyed on
+        # the real secret and the final compare is still constant-time.
+        signing_secret = signing_secret.strip() if signing_secret else signing_secret
         if not signing_secret or not timestamp or slack_signature is None:
             return False
         ts = int(timestamp)
