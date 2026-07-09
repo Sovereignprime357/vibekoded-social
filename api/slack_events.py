@@ -1,18 +1,26 @@
 """
-api/slack_events.py — Vercel serverless function: Slack Events → GitHub dispatch (SPEC-v4).
+api/slack_events.py — Vercel serverless function: the trigger webhook.
 
-Thin HTTP adapter. All security-relevant logic lives in slack_trigger.py (unit-
-tested). This file only: reads the request, calls verify_signature (fail-closed),
-calls decide(), and — on a valid operator 👍 — fires ONE repository_dispatch. It
-performs NO action logic (I-TRIGGER-NOT-ACTION); the richest thing it does is wake
-the fully-gated scout-act workflow.
+Two triggers, one catch-all function (single Vercel Python entrypoint — see
+pyproject.toml). Routed by header, path-independent:
+  - SLACK EVENT (SPEC-v4): request carries `X-Slack-Signature` -> verify the Slack
+    HMAC (fail-closed), decide, and on a valid operator 👍 fire repository_dispatch
+    `slack-thumbsup` (wakes scout-act). Request URL: .../api/slack_events
+  - HEARTBEAT (SPEC-v5): no Slack signature -> verify the HEARTBEAT_SECRET shared
+    token (fail-closed) and fire repository_dispatch `heartbeat` (wakes scout-tick +
+    notify-tick). Request URL: .../api/heartbeat (path is cosmetic; the header
+    decides). cron-job.org pings this on a dependable ~15-min cadence.
 
-Runtime: Vercel Python (zero third-party deps — stdlib hmac/urllib only). The
-Request URL is https://<deployment>/api/slack_events.
+All security-relevant logic lives in slack_trigger.py / heartbeat_trigger.py (unit-
+tested). This file performs NO action logic (I-TRIGGER-NOT-ACTION); the richest
+thing it does is fire a repository_dispatch that wakes a fully-gated workflow.
 
-Host env (secrets, never in repo — see OPERATOR-SETUP-event-trigger.md):
-  SLACK_SIGNING_SECRET, GITHUB_DISPATCH_TOKEN, GITHUB_REPO ("owner/repo"),
-  SLACK_OPERATOR_USER_ID, SLACK_CHANNEL_ID.
+Runtime: Vercel Python (zero third-party deps — stdlib hmac/urllib only).
+
+Host env (secrets, never in repo — see the OPERATOR-SETUP docs):
+  SLACK_SIGNING_SECRET, SLACK_OPERATOR_USER_ID, SLACK_CHANNEL_ID (slack trigger),
+  HEARTBEAT_SECRET (heartbeat trigger),
+  GITHUB_DISPATCH_TOKEN, GITHUB_REPO ("owner/repo") (shared — the PAT stays here).
 """
 
 from __future__ import annotations
@@ -24,10 +32,11 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-# Make the root-level slack_trigger module importable both on Vercel and locally.
+# Make the root-level trigger modules importable both on Vercel and locally.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import slack_trigger  # noqa: E402
+import heartbeat_trigger  # noqa: E402
 
 
 def _github_dispatch(repo: str, token: str, payload: dict, timeout: int = 8) -> int:
@@ -64,10 +73,40 @@ class handler(BaseHTTPRequestHandler):  # Vercel Python entrypoint (class named 
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_heartbeat(self) -> None:
+        """
+        HEARTBEAT path (SPEC-v5): verify the shared secret (fail-closed) and fire
+        repository_dispatch `heartbeat` to wake scout-tick + notify-tick. The GitHub
+        PAT stays here in Vercel env — the scheduler only holds HEARTBEAT_SECRET.
+        """
+        secret = os.environ.get("HEARTBEAT_SECRET", "")
+        provided = self.headers.get("Authorization")
+        if not heartbeat_trigger.verify_token(provided, secret):
+            self._send(401, "invalid heartbeat token")
+            return
+        repo = os.environ.get("GITHUB_REPO", "")
+        token = os.environ.get("GITHUB_DISPATCH_TOKEN", "")
+        if repo and token:
+            status = _github_dispatch(repo, token, heartbeat_trigger.build_dispatch_payload())
+            print(f"[slack_events] dispatched heartbeat -> github status {status}")
+        else:
+            print("[slack_events] GITHUB_REPO / GITHUB_DISPATCH_TOKEN unset; cannot dispatch heartbeat.")
+        # Ack fast regardless (a retrying scheduler won't fix a bad PAT; the GitHub
+        # cron fallback + the next heartbeat retry).
+        self._send(200, "ok")
+
     def do_POST(self) -> None:  # noqa: N802 — http.server API
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length).decode("utf-8") if length else ""
 
+        # Route by header (path-independent, robust under Vercel's single-entrypoint
+        # catch-all): a Slack request carries X-Slack-Signature; a heartbeat does
+        # not (it carries Authorization: Bearer <HEARTBEAT_SECRET>).
+        if self.headers.get("X-Slack-Signature") is None:
+            self._handle_heartbeat()
+            return
+
+        # --- SLACK EVENT path (SPEC-v4) ---
         # I-SIG-VERIFY (fail-closed): authenticate BEFORE parsing/acting.
         signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
         ts = self.headers.get("X-Slack-Request-Timestamp")

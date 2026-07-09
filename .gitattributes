@@ -1,0 +1,8 @@
+# Append-only state ledgers: union-merge concurrent appends instead of conflicting.
+#
+# Event-driven + heartbeat-driven runs (SPEC-v4/v5) mean two workflow runs can each
+# append a line to the same ledger and both try to push. `git pull --rebase` then hit
+# a real "CONFLICT (content)" on these files (observed: a scout-act run failed exactly
+# this way). The built-in `union` merge driver keeps BOTH sides' added lines — exactly
+# right for append-only JSONL, whose readers dedup by uri/ts and are order-tolerant.
+*.jsonl merge=union

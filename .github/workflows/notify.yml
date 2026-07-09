@@ -7,8 +7,14 @@ name: notify-tick
 # public replies to strangers in v1).
 on:
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "*/20 * * * *"   # best-effort FALLBACK only; GitHub cron lags 2-4h (SPEC-v5)
   workflow_dispatch: {}
+  # RELIABLE HEARTBEAT (SPEC-v5): external scheduler → Vercel /api/heartbeat →
+  # repository_dispatch fires this on a dependable ~15-min cadence (same event that
+  # wakes scout-tick). I-TRIGGER-NOT-ACTION: only WAKES reply-detection; converse
+  # triage + guard + human-gate still run.
+  repository_dispatch:
+    types: [heartbeat]
 
 # Same rationale as post.yml: serialize runs so two ticks never race on the
 # commit-back push, and never kill a run that may already have posted a
