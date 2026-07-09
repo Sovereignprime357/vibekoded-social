@@ -13,8 +13,13 @@ name: scout-tick
 # It becomes useful automatically once GEMINI_API_KEY + SLACK_WEBHOOK_URL exist.
 on:
   schedule:
-    - cron: "23 * * * *"   # hourly, offset to :23
+    - cron: "23 * * * *"   # best-effort FALLBACK only; GitHub cron lags 2-4h (SPEC-v5)
   workflow_dispatch: {}     # run on demand from the Actions tab
+  # RELIABLE HEARTBEAT (SPEC-v5): an external scheduler (cron-job.org) → Vercel
+  # /api/heartbeat → repository_dispatch fires this on a dependable ~15-min cadence.
+  # I-TRIGGER-NOT-ACTION: this only WAKES the scan; triage/surface gates unchanged.
+  repository_dispatch:
+    types: [heartbeat]
 
 # Never let two ticks race on the state commit-back. Don't cancel a tick
 # mid-flight (it may have already surfaced items and needs to log them).
