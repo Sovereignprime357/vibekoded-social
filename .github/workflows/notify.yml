@@ -65,6 +65,13 @@ jobs:
           GUARD_EXTRA_TERMS: ${{ secrets.GUARD_EXTRA_TERMS }}
           # Anti-spiral: max reply-backs proposed per thread. Tune without a push.
           CONVERSE_MAX_THREAD_DEPTH: ${{ vars.CONVERSE_MAX_THREAD_DEPTH || '3' }}
+          # Ops-Insight Harvest (SPEC-v6): review-only lens over the reply/mention
+          # stream (the deep-technical-exchange source). Posts briefs to the ops-intel
+          # channel (bot must be invited). Never acts, never writes to the brain.
+          SLACK_CHANNEL_OPS_INTEL: ${{ vars.SLACK_CHANNEL_OPS_INTEL || 'C0BGEB5FNGZ' }}
+          OPS_INSIGHT_FLAG_MODEL: ${{ vars.OPS_INSIGHT_FLAG_MODEL || 'anthropic' }}
+          OPS_INSIGHT_MODEL: ${{ vars.OPS_INSIGHT_MODEL }}          # optional stronger extract model id
+          OPS_INSIGHT_MAX_PER_TICK: ${{ vars.OPS_INSIGHT_MAX_PER_TICK || '3' }}
           DRY_RUN: ${{ vars.DRY_RUN || '0' }}
         run: python banter.py
 
@@ -82,7 +89,7 @@ jobs:
           # unstaged -> `git pull --rebase` aborted (exit 128). Unchanged files are
           # no-ops on the ephemeral runner, so staging the superset is safe + atomic.
           git add content-queue.jsonl posted.jsonl skipped.jsonl handled.jsonl \
-                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl
+                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl ops-insight-seen.jsonl
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else

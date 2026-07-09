@@ -319,6 +319,7 @@ def run_banter() -> int:
     our_own_post_uris = _load_our_own_post_uris()
 
     new_count = 0
+    insight_items: List[Dict[str, Any]] = []  # reply/mention text for the ops-insight harvest (reuse-only)
     for notification in notifications:
         uri = notification.get("uri")
         if not uri or uri in handled_ids:
@@ -329,6 +330,15 @@ def run_banter() -> int:
             continue
 
         new_count += 1
+        # Collect the (already-pulled) reply/mention for the ops-insight lens. This
+        # is the deep-technical-exchange stream; the harvest has its own dedup + a
+        # high bar, so including all reasons here is safe.
+        author = notification.get("author") or {}
+        insight_items.append({
+            "uri": uri, "cid": notification.get("cid"),
+            "text": _extract_text(notification),
+            "author_handle": author.get("handle", ""), "author_did": author.get("did", ""),
+        })
         if category == "own_account":
             process_own_account(notification, bluesky, session)
         elif category == "stranger":
@@ -343,6 +353,17 @@ def run_banter() -> int:
         print("[banter] no new reply/mention notifications this tick.")
     else:
         print(f"[banter] processed {new_count} new notification(s) this tick.")
+
+    # Ops-Insight Harvest (SPEC-v6): a SECOND, review-only lens over the reply/
+    # mention stream we ALREADY pulled (reuse-only). Wrapped so it can NEVER break
+    # the notify tick. Never acts, never writes to the brain — only a Slack brief.
+    try:
+        import ops_insight
+        n_ins = ops_insight.harvest(insight_items, dry_run=_is_dry_run())
+        if n_ins:
+            print(f"[banter] ops-insight: posted {n_ins} brief(s) to the review channel")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[banter] ops-insight harvest errored (non-fatal): {exc!r}")
 
     # Second pass: poll our own recent threads for the co-pilot's manual
     # comments, which never appear in listNotifications (Bluesky doesn't notify
