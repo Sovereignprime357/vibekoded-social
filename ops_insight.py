@@ -21,6 +21,7 @@ The lens is deliberately NARROW/high-bar — over-flagging is the failure mode.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,10 @@ import guard
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEEN_PATH = os.path.join(HERE, "ops-insight-seen.jsonl")
+# The LOG BRIDGE (SPEC-v6.1): every posted-worthy brief is ALSO appended here so the
+# operator's nightly distill (runs on his PC, can't see CI) can fetch it from the repo.
+# Public repo -> fetchable via raw.githubusercontent.com with no auth.
+LOG_PATH = os.path.join(HERE, "ops-intel-log.jsonl")
 
 DEFAULT_OPS_CHANNEL = "C0BGEB5FNGZ"  # ops-intel review channel (not secret; overridable via env)
 SLACK_POST_MESSAGE_EP = "https://slack.com/api/chat.postMessage"
@@ -320,6 +325,65 @@ def mark_seen(item: Dict[str, Any], status: str, path: Optional[str] = None) -> 
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+# ---------------------------------------------------------------------------
+# The LOG BRIDGE (SPEC-v6.1): mirror briefs to a repo file for the nightly distill
+# ---------------------------------------------------------------------------
+
+
+def _stable_id(source_uri: str) -> str:
+    """Deterministic short id from the source post uri — a stable key for the nightly."""
+    return hashlib.sha1(str(source_uri or "").encode("utf-8")).hexdigest()[:12]
+
+
+def load_logged_uris(path: Optional[str] = None) -> set:
+    """Source URIs already in the log — dedup so a brief is logged at most once."""
+    target = path or LOG_PATH
+    out: set = set()
+    if not os.path.exists(target):
+        return out
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    if rec.get("source_uri"):
+                        out.add(rec["source_uri"])
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
+def append_log(brief: Dict[str, str], item: Dict[str, Any], path: Optional[str] = None) -> bool:
+    """
+    Append one full brief to ops-intel-log.jsonl for the nightly distill. Deduped by
+    source uri (logged once). Returns True if written, False if already present.
+    Each entry carries the full brief + provenance (author + link) + ts + a stable id.
+    """
+    target = path or LOG_PATH
+    uri = item.get("uri")
+    if uri and uri in load_logged_uris(target):
+        return False
+    rec = {
+        "id": _stable_id(uri),
+        "source_uri": uri,
+        "ts": _now_iso(),
+        "author_handle": item.get("author_handle"),
+        "link": item.get("url"),
+        "insight": brief.get("insight", ""),
+        "applies": brief.get("applies", ""),
+        "effect": brief.get("effect", ""),
+        "why_improves": brief.get("why_improves", ""),
+    }
+    with open(target, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return True
+
+
 def post_brief(text: str, token: str, channel: str, timeout: int = 15) -> bool:
     """Post the brief to the ops-intel channel. Never raises; returns success."""
     try:
@@ -353,6 +417,7 @@ def harvest(
     flag_model: Optional[str] = None,
     extract_model_id: Optional[str] = None,
     max_per_tick: Optional[int] = None,
+    log_path: Optional[str] = None,
 ) -> int:
     """
     Run the harvest over already-pulled `items` (scout candidates / notify replies).
@@ -363,6 +428,7 @@ def harvest(
     token = token if token is not None else os.environ.get("SLACK_BOT_TOKEN", "").strip()
     channel = channel or _ops_channel()
     seen_path = seen_path or SEEN_PATH
+    log_path = log_path or LOG_PATH
     max_per_tick = _max_per_tick() if max_per_tick is None else max_per_tick
 
     normalized = [n for n in (normalize_item(it) for it in (items or [])) if n]
@@ -419,8 +485,13 @@ def harvest(
         if dry_run:
             print("---- [DRY_RUN] ops-insight brief ----")
             print(text)
-            # side-effect-free preview: no ledger write, no post.
+            # side-effect-free preview: no ledger write, no log write, no post.
             continue
+
+        # LOG BRIDGE: record the post-worthy brief for the nightly distill BEFORE the
+        # Slack attempt, so the intel is captured even if Slack rejects (bot not in
+        # channel). Deduped by source uri (logged once).
+        append_log(brief, it, log_path)
 
         if token and channel and post_brief(text, token, channel):
             mark_seen(it, "posted", seen_path)

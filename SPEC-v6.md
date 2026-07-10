@@ -89,6 +89,19 @@ silence.
   (review-only, additive).
 - **Same insight in both scout + notify** — the shared seen ledger dedups it.
 
+## LOG BRIDGE (v6.1 — the harvest→nightly input seam)
+The nightly distill runs on the operator's PC; the harvest runs in CI and can't write
+his machine. So every post-worthy brief is ALSO mirrored to `ops-intel-log.jsonl` in the
+repo (committed + pushed with the other ledgers), which the nightly fetches.
+- **I-LOG-MIRROR** — each brief that passes the guard is appended to `ops-intel-log.jsonl`
+  BEFORE the Slack attempt (so the intel is captured even if Slack rejects), as the full
+  brief (insight / applies / effect / why_improves) + provenance (author + link) + `ts` +
+  a stable `id` (sha1 of the source uri). Deduped by source uri — logged at most once. A
+  dry-run or guard-blocked brief is NOT logged. This is still I-NO-AUTO-BRAIN: a repo
+  ledger, not the brain.
+- **Fetch path** — the repo is PUBLIC, so the nightly reads the log with NO auth at:
+  `https://raw.githubusercontent.com/Sovereignprime357/vibekoded-social/main/ops-intel-log.jsonl`.
+
 ## OUT OF SCOPE (v6)
 - Any brain/memory write (I-NO-AUTO-BRAIN — separate human+Council decision).
 - Any action / 👍 / autonomy on a brief (review-only).
