@@ -1,0 +1,85 @@
+name: content-refill
+
+# Content Refill Loop (SPEC-content-refill-v1). Keeps content-queue.jsonl fed so
+# post-tick never silently drains. Two phases in refill_tick.py:
+#   - poll+enqueue (every heartbeat): promote operator-👍'd candidates into the queue
+#     + fire the queue-empty alert.
+#   - generate+surface (~8am / manual): generate N pillar-rotated candidates from
+#     APPROVED sources (evergreen floor + graduated intel — NEVER raw ops intel),
+#     guard fail-closed, dedup, surface to the review channel for the operator's 👍.
+#
+# Safe-degrade: no SLACK_BOT_TOKEN -> logs + skips; NEVER auto-posts ungated content.
+on:
+  schedule:
+    # ~8am ET (12:00 UTC). GitHub cron is best-effort and lags 2-4h, so this is
+    # approximate — the heartbeat poll below keeps 👍 promotion prompt regardless.
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}   # manual: also generates a fresh batch
+  # HEARTBEAT (SPEC-v5): external scheduler → repository_dispatch fires the poll every
+  # ~15 min so an operator 👍 promotes within a poll cycle.
+  repository_dispatch:
+    types: [heartbeat]
+
+# Serialize state commits; don't cancel a run mid-flight (it may have enqueued).
+concurrency:
+  group: vibekoded-social-refill-state
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  refill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run refill_tick
+        env:
+          # Generation runs in PERSONA voice (pillar-aware) on the paid model.
+          GEN_MODEL: ${{ vars.GEN_MODEL || 'anthropic' }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Review channel (not secret -> default; bot is already invited).
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_REFILL: ${{ vars.SLACK_CHANNEL_REFILL || 'C0BGDT13CN7' }}
+          # I-HUMAN-GATE-CONTENT: only THIS user's 👍 promotes a candidate.
+          SLACK_OPERATOR_USER_ID: ${{ secrets.SLACK_OPERATOR_USER_ID }}
+          # Privacy guard extended (client) terms — a secret, guards every candidate.
+          GUARD_EXTRA_TERMS: ${{ secrets.GUARD_EXTRA_TERMS }}
+          # I-CADENCE-EARNED: 5/day default.
+          REFILL_COUNT: ${{ vars.REFILL_COUNT || '5' }}
+          # Generate ONLY on the morning schedule or a manual run; heartbeat = poll-only.
+          REFILL_GENERATE: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
+          # Pause switch (preview-only): set repo variable REFILL_DRY_RUN=1.
+          DRY_RUN: ${{ vars.REFILL_DRY_RUN || '0' }}
+        run: python refill_tick.py
+
+      - name: Commit updated refill/queue state
+        run: |
+          git config user.name "vibekoded-social-bot"
+          git config user.email "actions@users.noreply.github.com"
+          # Full state-file superset (unchanged files are no-ops on the ephemeral
+          # runner) — includes content-queue.jsonl (enqueue) + the refill ledgers.
+          git add content-queue.jsonl posted.jsonl skipped.jsonl handled.jsonl \
+                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl \
+                  ops-insight-seen.jsonl frontier-followed.jsonl frontier-seen.jsonl ops-intel-log.jsonl \
+                  refill-surfaced.jsonl refill-state.json
+          if git diff --cached --quiet; then
+            echo "No refill state changes to commit."
+          else
+            git commit -m "chore(refill-tick): update content-refill state [skip ci]"
+            git pull --rebase --autostash origin HEAD
+            git push
+          fi
