@@ -59,6 +59,8 @@ def append_entry(
     shot: Optional[str] = None,
     ts: Optional[str] = None,
     pillar: Optional[str] = None,
+    final_text: Optional[str] = None,
+    provenance: Optional[Dict[str, Any]] = None,
     path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -97,6 +99,14 @@ def append_entry(
         entry["shot"] = str(shot).strip()
     if pillar:
         entry["pillar"] = pillar
+    # `final_text` (SPEC-content-refill): a pre-generated, operator-approved post.
+    # When present, post_tick posts it VERBATIM (still guard-checked) instead of
+    # re-generating from `raw` — so the exact text the operator 👍'd is what ships.
+    if final_text and str(final_text).strip():
+        entry["final_text"] = str(final_text).strip()
+    # `provenance` (I-PROVENANCE): source + pillar + approval trail.
+    if provenance:
+        entry["provenance"] = provenance
 
     target = _queue_path(path)
     os.makedirs(os.path.dirname(target) or ".", exist_ok=True)

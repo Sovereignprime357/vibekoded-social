@@ -127,12 +127,21 @@ def run_tick() -> int:
         f"pillar={entry.get('pillar') or '(untagged)'} (recent pillars: {recent or 'none'})"
     )
 
-    try:
-        text = generate.generate(entry, kind="post")
-    except Exception as exc:  # noqa: BLE001 — a generation crash must not crash the tick
-        print(f"[post_tick] generation raised an exception: {exc!r}")
-        _log_skip(entry, "", f"generation exception: {exc!r}")
-        return 1
+    # SPEC-content-refill: a content-refill entry carries a pre-generated,
+    # operator-approved `final_text` — post it VERBATIM (the exact text they 👍'd),
+    # skipping generation. The privacy guard below still runs on it (I-GUARDED
+    # safety net). Legacy entries (raw only) generate as before.
+    final_text = str(entry.get("final_text", "")).strip()
+    if final_text:
+        print("[post_tick] using pre-approved final_text (content-refill); skipping generation.")
+        text = final_text
+    else:
+        try:
+            text = generate.generate(entry, kind="post")
+        except Exception as exc:  # noqa: BLE001 — a generation crash must not crash the tick
+            print(f"[post_tick] generation raised an exception: {exc!r}")
+            _log_skip(entry, "", f"generation exception: {exc!r}")
+            return 1
 
     if not text:
         print("[post_tick] generation returned empty output — skipping this tick, entry stays unused for next run.")
