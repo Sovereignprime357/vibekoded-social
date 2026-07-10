@@ -26,6 +26,7 @@ Safe-degrade (never breaks the existing scout/surface):
 
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import sys
@@ -38,6 +39,26 @@ import bluesky
 HERE = os.path.dirname(os.path.abspath(__file__))
 SURFACED_PATH = os.path.join(HERE, "scout-surfaced.jsonl")
 ACT_LOG = os.path.join(HERE, "act-log.jsonl")
+
+# --- Poll-set bounds (2026-07-10 backlog fix) ------------------------------
+# scout-surfaced.jsonl grows forever; polling EVERY un-acted item (~515) blew
+# Slack's reactions.get Tier-3 rate limit (~50/min) -> everything "ratelimited"
+# -> no 👍 ever read -> executed 0. So we only poll RECENT items, cap the count,
+# expire stale ones out of the ledger, and pace the polls. Env-overridable.
+POLL_WINDOW_HOURS = float(os.environ.get("ACT_POLL_WINDOW_HOURS", "48") or "48")
+POLL_MAX_ITEMS = int(os.environ.get("ACT_POLL_MAX_ITEMS", "40") or "40")
+EXPIRE_HOURS = float(os.environ.get("ACT_EXPIRE_HOURS", "72") or "72")
+REACTION_POLL_SLEEP_S = float(os.environ.get("ACT_REACTION_POLL_SLEEP", "0.7") or "0.7")
+
+
+def _parse_iso_epoch(ts: str) -> Optional[float]:
+    """Parse a surfaced 'YYYY-MM-DDThh:mm:ssZ' (UTC) timestamp to epoch seconds, or None."""
+    if not ts:
+        return None
+    try:
+        return calendar.timegm(time.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, TypeError):
+        return None
 
 
 def _is_dry_run() -> bool:
@@ -57,12 +78,9 @@ def _today_utc() -> str:
 # ---------------------------------------------------------------------------
 
 
-def load_actionable(path: str = SURFACED_PATH) -> List[Dict[str, Any]]:
-    """
-    Surfaced records that carry a Slack ts+channel (posted via the bot token, so
-    a reaction can be polled). Records surfaced via the legacy webhook have no
-    ts and are silently skipped here — not actionable, by design.
-    """
+def _iter_surfaced(path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """All surfaced records carrying a pollable Slack ts+channel+uri (unbounded)."""
+    path = path or SURFACED_PATH  # resolve at CALL time (monkeypatch-safe, no def-time bind)
     if not os.path.exists(path):
         return []
     out: List[Dict[str, Any]] = []
@@ -80,12 +98,79 @@ def load_actionable(path: str = SURFACED_PATH) -> List[Dict[str, Any]]:
     return out
 
 
-def load_acted(path: str = ACT_LOG) -> Tuple[Set[str], Dict[str, int]]:
+def load_actionable(
+    path: Optional[str] = None,
+    window_hours: Optional[float] = None,
+    max_items: Optional[int] = None,
+    now: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """
+    RECENT surfaced records to poll this tick — BOUNDED so reactions.get calls/tick
+    stay well under Slack's Tier-3 rate limit. Only items surfaced within
+    `window_hours` (default POLL_WINDOW_HOURS), newest-first, capped at `max_items`
+    (default POLL_MAX_ITEMS). A 👍 lands within a poll cycle or two of surfacing, so
+    a bounded recent window loses nothing real while making the poll O(1) not O(all).
+
+    Items with an unparseable surfaced-ts are treated as fresh (kept), so a format
+    hiccup never silently drops a live item — the cap still bounds them.
+    """
+    window_hours = POLL_WINDOW_HOURS if window_hours is None else window_hours
+    max_items = POLL_MAX_ITEMS if max_items is None else max_items
+    now = time.time() if now is None else now
+    cutoff = now - window_hours * 3600.0
+
+    recent: List[Tuple[float, Dict[str, Any]]] = []
+    for rec in _iter_surfaced(path):
+        epoch = _parse_iso_epoch(rec.get("ts", ""))
+        sort_key = epoch if epoch is not None else now  # unparseable => treat as fresh
+        if epoch is not None and epoch < cutoff:
+            continue  # too old for this poll window (expire_stale retires it)
+        recent.append((sort_key, rec))
+    recent.sort(key=lambda t: t[0], reverse=True)  # newest first
+    return [rec for _, rec in recent[:max_items]]
+
+
+def expire_stale(
+    acted_uris: Set[str],
+    now: Optional[float] = None,
+    expire_hours: Optional[float] = None,
+    path: Optional[str] = None,
+    log_path: Optional[str] = None,
+) -> Set[str]:
+    """
+    Permanently retire surfaced items older than `expire_hours` (default EXPIRE_HOURS)
+    that were never acted: append an "expired" (terminal) record to the act log so they
+    drop out of the poll set forever. Stops the unbounded backlog growth that tripped
+    the rate limit. Stale engagement opportunities; abandoning them is fine (SPEC-ok).
+    Returns the set of uris expired this call.
+    """
+    now = time.time() if now is None else now
+    expire_hours = EXPIRE_HOURS if expire_hours is None else expire_hours
+    cutoff = now - expire_hours * 3600.0
+    expired: Set[str] = set()
+    for rec in _iter_surfaced(path):
+        uri = rec.get("uri")
+        if not uri or uri in acted_uris or uri in expired:
+            continue
+        epoch = _parse_iso_epoch(rec.get("ts", ""))
+        if epoch is None or epoch >= cutoff:
+            continue  # unparseable or still within TTL -> not expired
+        _log_act({"ts": _now_iso(), "uri": uri, "action": rec.get("action"),
+                  "status": "expired", "reason": f"un-acted >{expire_hours:.0f}h since surfaced"},
+                 path=log_path)
+        expired.add(uri)
+    if expired:
+        print(f"[act_tick] expired {len(expired)} stale un-acted item(s) (>{expire_hours:.0f}h old).")
+    return expired
+
+
+def load_acted(path: Optional[str] = None) -> Tuple[Set[str], Dict[str, int]]:
     """
     Read the act log. Returns:
       - acted_uris: URIs that reached a TERMINAL status (never fire again).
       - today_counts: {action: n executed today (UTC)} for the daily caps.
     """
+    path = path or ACT_LOG  # resolve at CALL time (monkeypatch-safe)
     acted: Set[str] = set()
     counts: Dict[str, int] = {}
     if not os.path.exists(path):
@@ -164,12 +249,17 @@ def run_tick() -> int:
               "acting on NOTHING (I-HUMAN-GATE fail-closed). Set it to your Slack user id (U…) to enable acting.")
         return 0
 
-    actionable = load_actionable()
+    now = time.time()
+    acted_uris, today_counts = load_acted()
+    # Retire stale un-acted items so the poll set can't grow unbounded (the backlog
+    # that tripped Slack's reactions.get rate limit), then poll only the RECENT,
+    # capped window — keeps reactions.get calls/tick well under Slack's ~50/min.
+    acted_uris |= expire_stale(acted_uris, now=now)
+    actionable = load_actionable(now=now)
     if not actionable:
-        print("[act_tick] no actionable surfaced items (none carry a Slack ts yet); done.")
+        print("[act_tick] no recent actionable surfaced items to poll this tick; done.")
         return 0
 
-    acted_uris, today_counts = load_acted()
     caps = act.load_caps()
     pacing_seconds = act.load_pacing_seconds()
     max_per_tick = act.load_max_per_tick()
@@ -199,10 +289,12 @@ def run_tick() -> int:
             auto_reply_classes = set()
 
     pending = [it for it in actionable if it.get("uri") not in acted_uris]
-    print(f"[act_tick] {len(pending)} un-acted actionable item(s); dry_run={dry} "
+    print(f"[act_tick] {len(pending)} un-acted actionable item(s) in the recent window "
+          f"(<= {POLL_MAX_ITEMS} polled/tick); dry_run={dry} "
           f"max_per_tick={max_per_tick} pacing={pacing_seconds}s operator={operator_id}")
 
     executed = 0
+    polled = 0
     auto_followed: list = []  # handles auto-followed this tick, for the Slack FYI digest
     for item in pending:
         uri = item.get("uri")
@@ -221,7 +313,12 @@ def run_tick() -> int:
             _log_act({"ts": _now_iso(), "uri": uri, "action": action, "status": "skipped_self"})
             continue
 
+        # Pace the reaction polls so a burst can't trip Slack's rate limit (belt on
+        # top of the bounded poll set). Sleep between polls, never before the first.
+        if polled > 0 and REACTION_POLL_SLEEP_S > 0 and not dry:
+            time.sleep(REACTION_POLL_SLEEP_S)
         reactions = act.get_reactions(item["slack_channel"], item["slack_ts"], token)
+        polled += 1
         approved = act.operator_thumbsup(reactions, operator_id)
         # Autonomy only where a class has EARNED it (AUTONOMY LADDER): follow via
         # AUTO_ACT_CLASSES (default), converse reply-backs via AUTO_REPLY_BACK

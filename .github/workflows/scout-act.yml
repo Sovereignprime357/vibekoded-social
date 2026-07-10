@@ -87,6 +87,13 @@ jobs:
           # (cron-lagged) run drains a real batch: ~10 actions × 20s ≈ a 3-min run.
           ACT_PACING_SECONDS: ${{ vars.ACT_PACING_SECONDS || '20' }}
           ACT_MAX_PER_TICK: ${{ vars.ACT_MAX_PER_TICK || '10' }}
+          # Poll-set bounds (2026-07-10 backlog/rate-limit fix): poll only RECENT,
+          # capped surfaced items so reactions.get stays under Slack's ~50/min, expire
+          # stale ones out, and pace the polls. Tunable without a code push.
+          ACT_POLL_WINDOW_HOURS: ${{ vars.ACT_POLL_WINDOW_HOURS || '48' }}
+          ACT_POLL_MAX_ITEMS: ${{ vars.ACT_POLL_MAX_ITEMS || '40' }}
+          ACT_EXPIRE_HOURS: ${{ vars.ACT_EXPIRE_HOURS || '72' }}
+          ACT_REACTION_POLL_SLEEP: ${{ vars.ACT_REACTION_POLL_SLEEP || '0.7' }}
           # Earn-it ladder: which conversation reply-back CLASSES may post WITHOUT
           # a 👍 (autonomous). Default OFF -> everything human-gated. Set e.g.
           # "appreciation" or "all" ONLY once a class has proven out.

@@ -10,6 +10,7 @@ No network: Slack reads (get_reactions) and Bluesky writes (execute_action) are
 monkeypatched; the act log is redirected to a tmp file.
 """
 
+import json
 import os
 import sys
 
@@ -44,8 +45,12 @@ def _wire(monkeypatch, tmp_path, items, reacted_ts, *, operator="U_OP",
         monkeypatch.setenv(k, v)
 
     monkeypatch.setattr(act_tick, "ACT_LOG", str(tmp_path / "act-log.jsonl"))
-    monkeypatch.setattr(act_tick, "load_actionable", lambda path=None: list(items))
+    monkeypatch.setattr(act_tick, "load_actionable", lambda *a, **k: list(items))
     monkeypatch.setattr(act_tick, "load_acted", lambda path=None: (set(), {}))
+    # Neutralize the file-reading expiry pass for the injected-item harness.
+    monkeypatch.setattr(act_tick, "expire_stale", lambda acted_uris, now=None, **k: set())
+    # Isolate execution-pacing tests from the reaction-poll sleep (tested separately).
+    monkeypatch.setattr(act_tick, "REACTION_POLL_SLEEP_S", 0.0)
     monkeypatch.setattr(act_tick, "bluesky_session", lambda: {"did": "did:plc:us"})
     # Self-label ensure-step (safety basis) — stub so no network; report set.
     monkeypatch.setattr(act_tick.bluesky, "ensure_bot_label", lambda session: {"status": "already_set"})
@@ -242,3 +247,130 @@ def test_follow_autonomy_disabled_when_self_label_unconfirmed(monkeypatch, tmp_p
 
     act_tick.run_tick()
     assert executed == []  # self-label unconfirmed -> no autonomous follow
+
+
+# --- backlog fix (2026-07-10): bounded poll set + expiry + rate-limit backoff ---
+
+import time as _time  # noqa: E402
+
+
+def _surfaced_file(tmp_path, rows):
+    p = tmp_path / "surfaced.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    return str(p)
+
+
+def _iso(epoch):
+    return _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(epoch))
+
+
+def test_load_actionable_bounds_window_and_count(tmp_path):
+    now = 1_783_000_000.0
+    rows = []
+    # 100 fresh items (within 48h) + 50 stale items (surfaced 5 days ago)
+    for i in range(100):
+        rows.append({"uri": f"at://fresh{i}", "cid": "c", "slack_ts": f"{i}.0",
+                     "slack_channel": "C", "ts": _iso(now - i * 60)})  # spread over ~100 min
+    for i in range(50):
+        rows.append({"uri": f"at://old{i}", "cid": "c", "slack_ts": f"o{i}.0",
+                     "slack_channel": "C", "ts": _iso(now - 5 * 24 * 3600)})
+    path = _surfaced_file(tmp_path, rows)
+    out = act_tick.load_actionable(path=path, window_hours=48, max_items=40, now=now)
+    assert len(out) == 40                                   # capped
+    assert all(u.startswith("at://fresh") for u in [r["uri"] for r in out])  # no stale
+    # newest-first: fresh0 (now) leads
+    assert out[0]["uri"] == "at://fresh0"
+
+
+def test_load_actionable_excludes_stale_window(tmp_path):
+    now = 1_783_000_000.0
+    rows = [
+        {"uri": "at://recent", "cid": "c", "slack_ts": "1.0", "slack_channel": "C", "ts": _iso(now - 3600)},
+        {"uri": "at://old", "cid": "c", "slack_ts": "2.0", "slack_channel": "C", "ts": _iso(now - 100 * 3600)},
+    ]
+    path = _surfaced_file(tmp_path, rows)
+    out = act_tick.load_actionable(path=path, window_hours=48, max_items=40, now=now)
+    assert [r["uri"] for r in out] == ["at://recent"]
+
+
+def test_expire_stale_marks_old_unacted_terminal(tmp_path):
+    now = 1_783_000_000.0
+    rows = [
+        {"uri": "at://stale", "action": "like", "slack_ts": "1.0", "slack_channel": "C", "ts": _iso(now - 100 * 3600)},
+        {"uri": "at://fresh", "action": "like", "slack_ts": "2.0", "slack_channel": "C", "ts": _iso(now - 3600)},
+        {"uri": "at://acted", "action": "like", "slack_ts": "3.0", "slack_channel": "C", "ts": _iso(now - 100 * 3600)},
+    ]
+    path = _surfaced_file(tmp_path, rows)
+    log = str(tmp_path / "act-log.jsonl")
+    expired = act_tick.expire_stale({"at://acted"}, now=now, expire_hours=72, path=path, log_path=log)
+    assert expired == {"at://stale"}                        # fresh kept, already-acted skipped
+    rec = json.loads(open(log, encoding="utf-8").readline())
+    assert rec["uri"] == "at://stale" and rec["status"] == "expired"
+    assert "expired" in act.TERMINAL_STATUSES               # load_acted treats it terminal
+
+
+def test_get_reactions_backs_off_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    class _Resp:
+        def __init__(self, status, data, headers=None):
+            self.status_code = status; self._data = data
+            self.content = b"x"; self.headers = headers or {}
+        def json(self): return self._data
+
+    def fake_get(url, headers=None, params=None, timeout=15):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Resp(429, {"ok": False, "error": "ratelimited"}, {"Retry-After": "1"})
+        return _Resp(200, {"ok": True, "message": {"reactions": [{"name": "+1", "users": ["U_OP"]}]}})
+
+    slept = []
+    monkeypatch.setattr(act.requests, "get", fake_get)
+    monkeypatch.setattr(act.time, "sleep", lambda s: slept.append(s))
+    out = act.get_reactions("C", "1.0", "tok", retries=1)
+    assert out == [{"name": "+1", "users": ["U_OP"]}]        # retried after backoff
+    assert calls["n"] == 2 and slept and slept[0] >= 1.0
+
+
+def test_get_reactions_gives_up_after_backoff(monkeypatch):
+    class _Resp:
+        status_code = 429; content = b"x"; headers = {"Retry-After": "1"}
+        def json(self): return {"ok": False, "error": "ratelimited"}
+    monkeypatch.setattr(act.requests, "get", lambda *a, **k: _Resp())
+    monkeypatch.setattr(act.time, "sleep", lambda s: None)
+    assert act.get_reactions("C", "1.0", "tok", retries=1) == []   # still limited -> [] (fail safe)
+
+
+def test_recent_thumbsup_acted_despite_large_stale_backlog(monkeypatch, tmp_path):
+    # End-to-end: a huge stale backlog + one FRESH 👍'd item -> the fresh item is
+    # polled (bounded set) and executed; the backlog is expired out, not polled.
+    now = _time.time()
+    rows = [{"uri": f"at://old{i}", "action": "like", "cid": "c", "author_did": f"d{i}",
+             "slack_ts": f"o{i}.0", "slack_channel": "C1", "ts": _iso(now - 200 * 3600)}
+            for i in range(300)]
+    rows.append({"uri": "at://freshpost", "action": "like", "cid": "cf", "author_did": "dfresh",
+                 "slack_ts": "FRESH.ts", "slack_channel": "C1", "ts": _iso(now - 600)})
+    surfaced = _surfaced_file(tmp_path, rows)
+
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb"); monkeypatch.setenv("SLACK_CHANNEL_ID", "C1")
+    monkeypatch.setenv("SLACK_OPERATOR_USER_ID", "U_OP"); monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.setattr(act_tick, "SURFACED_PATH", surfaced)
+    monkeypatch.setattr(act_tick, "ACT_LOG", str(tmp_path / "act-log.jsonl"))
+    monkeypatch.setattr(act_tick, "load_acted", lambda path=None: (set(), {}))
+    monkeypatch.setattr(act_tick, "bluesky_session", lambda: {"did": "did:plc:us"})
+    monkeypatch.setattr(act_tick.time, "sleep", lambda s: None)
+
+    polled = []
+    def fake_reactions(channel, ts, token, timeout=15, retries=1):
+        polled.append(ts)
+        return [{"name": "+1", "users": ["U_OP"], "count": 1}] if ts == "FRESH.ts" else []
+    monkeypatch.setattr(act, "get_reactions", fake_reactions)
+    executed = []
+    monkeypatch.setattr(act, "execute_action", lambda item, session=None, dry_run=False:
+                        (executed.append(item["uri"]) or {"action": item["action"], "status": "executed", "uri": item["uri"]}))
+
+    rc = act_tick.run_tick()
+    assert rc == 0
+    assert executed == ["at://freshpost"]        # the fresh 👍'd item WAS read + acted
+    assert len(polled) <= act_tick.POLL_MAX_ITEMS  # never polled the 300-item backlog
+    assert "FRESH.ts" in polled

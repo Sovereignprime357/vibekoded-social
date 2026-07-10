@@ -54,7 +54,7 @@ DEFAULT_MAX_PER_TICK = 3
 # Terminal statuses: the item is done and must never fire again (I-LOGGED, no
 # double-fire). Transient statuses (awaiting thumbsup, cap reached) are NOT
 # written to the act log, so they're retried on a later tick.
-TERMINAL_STATUSES = {"executed", "guard_blocked", "skipped_self", "empty_draft", "error"}
+TERMINAL_STATUSES = {"executed", "guard_blocked", "skipped_self", "empty_draft", "error", "expired"}
 
 
 # ---------------------------------------------------------------------------
@@ -231,27 +231,49 @@ def is_self(item: Dict[str, Any], own_did: Optional[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def get_reactions(channel: str, ts: str, token: str, timeout: int = 15) -> List[Dict[str, Any]]:
+# reactions.get is a Slack Tier-3 method (~50 req/min). Cap how long we'll wait on
+# a single 429 so a tick can't hang, and how many times we retry it.
+_REACTIONS_BACKOFF_CAP_S = 20.0
+
+
+def get_reactions(channel: str, ts: str, token: str, timeout: int = 15, retries: int = 1) -> List[Dict[str, Any]]:
     """
     Fetch the reactions on one message via Slack reactions.get. Returns the
     reactions list (possibly empty). Never raises — a Slack error degrades to
     "no reactions", which means "not approved yet" (fail safe, we just don't act).
+
+    Rate-limit aware: on a 429 / "ratelimited" it honors Retry-After (capped) and
+    retries once, so a transient burst degrades gracefully instead of silently
+    reading "no reactions" and dropping the operator's 👍. (The real fix for the
+    backlog blow-up is bounding the poll set upstream; this is the safety net.)
     """
-    try:
-        resp = requests.get(
-            SLACK_REACTIONS_GET_EP,
-            headers={"Authorization": f"Bearer {token}"},
-            params={"channel": channel, "timestamp": ts},
-            timeout=timeout,
-        )
-        data = resp.json() if resp.content else {}
-    except (requests.RequestException, ValueError) as exc:
-        print(f"[act] reactions.get error (non-fatal): {exc}")
-        return []
-    if not data.get("ok"):
-        print(f"[act] reactions.get rejected for ts={ts}: {data.get('error')}")
-        return []
-    return (data.get("message") or {}).get("reactions", []) or []
+    for attempt in range(max(1, retries + 1)):
+        try:
+            resp = requests.get(
+                SLACK_REACTIONS_GET_EP,
+                headers={"Authorization": f"Bearer {token}"},
+                params={"channel": channel, "timestamp": ts},
+                timeout=timeout,
+            )
+            data = resp.json() if resp.content else {}
+        except (requests.RequestException, ValueError) as exc:
+            print(f"[act] reactions.get error (non-fatal): {exc}")
+            return []
+        ratelimited = getattr(resp, "status_code", 200) == 429 or data.get("error") == "ratelimited"
+        if ratelimited and attempt < retries:
+            try:
+                wait = float(resp.headers.get("Retry-After", 1) or 1)
+            except (ValueError, TypeError):
+                wait = 1.0
+            wait = min(max(wait, 1.0), _REACTIONS_BACKOFF_CAP_S)
+            print(f"[act] reactions.get ratelimited for ts={ts}; backing off {wait:.1f}s (attempt {attempt + 1})")
+            time.sleep(wait)
+            continue
+        if not data.get("ok"):
+            print(f"[act] reactions.get rejected for ts={ts}: {data.get('error')}")
+            return []
+        return (data.get("message") or {}).get("reactions", []) or []
+    return []
 
 
 # ---------------------------------------------------------------------------
