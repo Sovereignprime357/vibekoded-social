@@ -161,9 +161,11 @@ def decide(body: Dict[str, Any], operator_id: Optional[str], target_channels: An
 
 def build_dispatch_payload(body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    The GitHub repository_dispatch body. client_payload is trace-only metadata
-    (no secrets, no action authority — I-TRIGGER-NOT-ACTION). scout-act reads
-    NONE of it to decide what to do; act_tick re-derives everything from Slack.
+    The GitHub repository_dispatch body. client_payload carries the reacted
+    message's ts+channel as a TARGETING HINT (no secrets, no action authority —
+    I-TRIGGER-NOT-ACTION): act_tick uses it to look up the ONE item, then STILL
+    re-verifies the operator's 👍 via reactions.get before executing. A spoofed
+    ts thus wastes a lookup, never acts.
     """
     event = (body or {}).get("event") or {}
     item = event.get("item") or {}

@@ -39,6 +39,8 @@ def _wire(monkeypatch, tmp_path, items, reacted_ts, *, operator="U_OP",
     else:
         monkeypatch.setenv("SLACK_OPERATOR_USER_ID", operator)
     monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.delenv("ACT_TARGET_TS", raising=False)       # default harness = poll mode
+    monkeypatch.delenv("ACT_TARGET_CHANNEL", raising=False)
     monkeypatch.setenv("ACT_PACING_SECONDS", pacing)
     monkeypatch.setenv("ACT_MAX_PER_TICK", max_per_tick)
     for k, v in (caps_env or {}).items():
@@ -374,3 +376,61 @@ def test_recent_thumbsup_acted_despite_large_stale_backlog(monkeypatch, tmp_path
     assert executed == ["at://freshpost"]        # the fresh 👍'd item WAS read + acted
     assert len(polled) <= act_tick.POLL_MAX_ITEMS  # never polled the 300-item backlog
     assert "FRESH.ts" in polled
+
+
+# --- event-driven targeting (SPEC-v4.1): reaction_added -> act on THAT item -----
+
+def test_event_targeted_acts_on_the_reacted_item(monkeypatch, tmp_path):
+    item = _surfaced("post_target", "TS.9", action="like")
+    executed, _ = _wire(monkeypatch, tmp_path, items=[], reacted_ts={"TS.9"})
+    monkeypatch.setenv("ACT_TARGET_TS", "TS.9")
+    monkeypatch.setenv("ACT_TARGET_CHANNEL", "C1")
+    # Targeted lookup returns the one reacted item (no backlog scan).
+    monkeypatch.setattr(act_tick, "load_targeted", lambda ts, ch=None, path=None: [item] if ts == "TS.9" else [])
+    # If the poll path were taken this would blow up (proves we used the targeted path).
+    monkeypatch.setattr(act_tick, "load_actionable", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not poll in targeted mode")))
+    rc = act_tick.run_tick()
+    assert rc == 0
+    assert executed == ["post_target"]   # acted on the exact reacted item, instantly
+
+
+def test_event_targeted_idempotent_vs_poll(monkeypatch, tmp_path):
+    item = _surfaced("dup", "TS.1", action="like")
+    executed, _ = _wire(monkeypatch, tmp_path, items=[], reacted_ts={"TS.1"})
+    monkeypatch.setenv("ACT_TARGET_TS", "TS.1")
+    monkeypatch.setattr(act_tick, "load_targeted", lambda ts, ch=None, path=None: [item])
+    # The poll already acted this uri (it's terminal in the act-log).
+    monkeypatch.setattr(act_tick, "load_acted", lambda path=None: ({"dup"}, {}))
+    act_tick.run_tick()
+    assert executed == []   # already acted -> no-op; webhook + poll can't double-fire
+
+
+def test_event_targeted_reverifies_operator_reaction(monkeypatch, tmp_path):
+    # Targeted, but the message carries NO operator 👍 (spoofed dispatch / 👍 removed):
+    # act_tick re-verifies via reactions.get and does NOT act.
+    item = _surfaced("noreact", "TS.2", action="like")
+    executed, _ = _wire(monkeypatch, tmp_path, items=[], reacted_ts=set())  # nothing reacted
+    monkeypatch.setenv("ACT_TARGET_TS", "TS.2")
+    monkeypatch.setattr(act_tick, "load_targeted", lambda ts, ch=None, path=None: [item])
+    act_tick.run_tick()
+    assert executed == []   # re-verify gate: no operator 👍 on the message -> no act
+
+
+def test_event_targeted_no_matching_item_is_noop(monkeypatch, tmp_path):
+    executed, _ = _wire(monkeypatch, tmp_path, items=[], reacted_ts={"TS.x"})
+    monkeypatch.setenv("ACT_TARGET_TS", "TS.x")
+    monkeypatch.setattr(act_tick, "load_targeted", lambda ts, ch=None, path=None: [])  # ts not a surfaced item
+    rc = act_tick.run_tick()
+    assert rc == 0 and executed == []
+
+
+def test_load_targeted_matches_by_ts_and_channel(tmp_path):
+    rows = [
+        {"uri": "at://a", "slack_ts": "1.0", "slack_channel": "C1"},
+        {"uri": "at://b", "slack_ts": "2.0", "slack_channel": "C1"},
+        {"uri": "at://c", "slack_ts": "2.0", "slack_channel": "C2"},
+    ]
+    p = _surfaced_file(tmp_path, rows)
+    assert [r["uri"] for r in act_tick.load_targeted("2.0", "C1", path=p)] == ["at://b"]
+    assert sorted(r["uri"] for r in act_tick.load_targeted("2.0", None, path=p)) == ["at://b", "at://c"]
+    assert act_tick.load_targeted("", None, path=p) == []
