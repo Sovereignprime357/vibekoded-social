@@ -52,6 +52,18 @@ def main() -> int:
         print(f"[scout_tick] cannot create Bluesky session: {exc}")
         return 1
 
+    # Frontier auto-follow (SPEC-v7): follow the curated watchlist within the SHARED
+    # daily follow cap + pacing (pre-vetted -> fills the budget preferentially).
+    # Autonomous follow, gated on the confirmed bot self-label; wrapped so it can
+    # NEVER break the scout tick.
+    try:
+        import frontier
+        n_f = frontier.follow_watchlist(session, dry_run=dry, own_did=session.get("did"))
+        if n_f:
+            print(f"[scout_tick] frontier: auto-followed {n_f} watchlist account(s)")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[scout_tick] frontier auto-follow errored (non-fatal): {exc!r}")
+
     candidates = scout.scan(session=session, persist=not dry)
     if not candidates:
         print("[scout_tick] no new candidates this tick; done")
@@ -70,6 +82,20 @@ def main() -> int:
         print(f"[scout_tick] ops-insight harvest errored (non-fatal): {exc!r}")
 
     surfaced_items = triage.classify_all(candidates)
+
+    # Frontier monitoring feed (SPEC-v7, review-only): post watchlist activity to the
+    # frontier channel — study_closely = EVERY post; high_signal = notable/on-mission.
+    # Runs REGARDLESS of whether mission-triage surfaced anything (study_closely must
+    # feed even off-mission). Wrapped; takes no action, writes no brain/memory.
+    try:
+        import frontier
+        on_mission_uris = {it.get("uri") for it in surfaced_items if it.get("uri")}
+        n_fr = frontier.feed_candidates(candidates, on_mission_uris=on_mission_uris, dry_run=dry)
+        if n_fr:
+            print(f"[scout_tick] frontier: posted {n_fr} monitoring card(s) to the frontier channel")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[scout_tick] frontier feed errored (non-fatal): {exc!r}")
+
     if not surfaced_items:
         print("[scout_tick] triage found nothing on-mission this tick; done")
         return 0

@@ -23,6 +23,8 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import frontier  # curated watchlist boosts (SPEC-v7); light module (no bluesky/act at import)
+
 CONFIDENCE_POINTS = {"high": 3.0, "med": 2.0, "low": 1.0}
 
 WEIGHTS = {
@@ -58,10 +60,16 @@ def _recency_score(indexed_at: str, now_epoch: Optional[float] = None) -> float:
     return max(0.0, 1.0 - hours / _RECENCY_HORIZON_H)
 
 
-def score_item(item: Dict[str, Any], now_epoch: Optional[float] = None) -> Tuple[float, Dict[str, float]]:
+def score_item(item: Dict[str, Any], now_epoch: Optional[float] = None,
+               watchlist: Optional[Dict[str, str]] = None) -> Tuple[float, Dict[str, float]]:
     """
     Return (score, components). Components are the WEIGHTED contributions, so
     they sum to the score and read as "where the score came from".
+
+    `watchlist` (SPEC-v7): the frontier watchlist map; when the item's author is on
+    it, a `frontier` boost is added (study_closely > high_signal) so pre-vetted
+    frontier accounts rank higher. Passed in by rank_items (loaded once); defaults
+    to the cached watchlist when called directly.
     """
     conf_raw = CONFIDENCE_POINTS.get(str(item.get("confidence", "low")).lower(), 1.0)
     reach_raw = math.log10(1.0 + _to_float(item.get("author_followers")))
@@ -73,6 +81,7 @@ def score_item(item: Dict[str, Any], now_epoch: Optional[float] = None) -> Tuple
         + _to_float(item.get("repost_count"))
     )
     fit_raw = 1.0 if (item.get("lane_id") or item.get("lane_label")) else 0.0
+    frontier_boost = frontier.boost_for(item.get("author_handle", ""), watchlist)
 
     components = {
         "confidence": round(WEIGHTS["confidence"] * conf_raw, 4),
@@ -80,6 +89,7 @@ def score_item(item: Dict[str, Any], now_epoch: Optional[float] = None) -> Tuple
         "recency": round(WEIGHTS["recency"] * recency_raw, 4),
         "engagement": round(WEIGHTS["engagement"] * engagement_raw, 4),
         "fit": round(WEIGHTS["fit"] * fit_raw, 4),
+        "frontier": round(frontier_boost, 4),
     }
     score = round(sum(components.values()), 4)
     return score, components
@@ -91,9 +101,10 @@ def rank_items(items: List[Dict[str, Any]], now_epoch: Optional[float] = None) -
     `rank_score` and `rank_components` (so the ordering is auditable and the
     score is persisted with the surfaced record). Stable for equal scores.
     """
+    watchlist = frontier.get_watchlist()  # load once for the whole batch
     scored: List[Tuple[float, int, Dict[str, Any]]] = []
     for i, item in enumerate(items):
-        score, components = score_item(item, now_epoch)
+        score, components = score_item(item, now_epoch, watchlist)
         enriched = dict(item)
         enriched["rank_score"] = score
         enriched["rank_components"] = components

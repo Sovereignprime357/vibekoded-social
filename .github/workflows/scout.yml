@@ -94,6 +94,12 @@ jobs:
           OPS_INSIGHT_FLAG_MODEL: ${{ vars.OPS_INSIGHT_FLAG_MODEL || 'anthropic' }}
           OPS_INSIGHT_MODEL: ${{ vars.OPS_INSIGHT_MODEL }}          # optional stronger extract model id
           OPS_INSIGHT_MAX_PER_TICK: ${{ vars.OPS_INSIGHT_MAX_PER_TICK || '3' }}
+          # Frontier watchlist (SPEC-v7): auto-follow + weight + review-only monitoring
+          # feed. Follows share the autonomous-follow daily cap + pacing (below). Feed
+          # channel is not secret -> default (bot is already in it).
+          SLACK_CHANNEL_FRONTIER: ${{ vars.SLACK_CHANNEL_FRONTIER || 'C0BGH90UKM2' }}
+          ACT_CAP_FOLLOW: ${{ vars.ACT_CAP_FOLLOW || '10' }}
+          ACT_PACING_SECONDS: ${{ vars.ACT_PACING_SECONDS || '20' }}
           # Scout has its OWN pause switch, independent of post-tick's DRY_RUN,
           # so posting and scouting can be toggled separately. Set repo
           # variable SCOUT_DRY_RUN=1 for preview-only.
@@ -110,7 +116,7 @@ jobs:
           # Stage the FULL state-file superset (unchanged files are no-ops on the
           # ephemeral runner) so no state a run writes is ever left unstaged.
           git add content-queue.jsonl posted.jsonl skipped.jsonl handled.jsonl \
-                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl ops-insight-seen.jsonl
+                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl ops-insight-seen.jsonl frontier-followed.jsonl frontier-seen.jsonl
           if git diff --cached --quiet; then
             echo "No scout state changes to commit."
           else

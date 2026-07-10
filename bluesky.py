@@ -34,6 +34,7 @@ GET_RECORD_EP = f"{BASE_URL}/com.atproto.repo.getRecord"
 PUT_RECORD_EP = f"{BASE_URL}/com.atproto.repo.putRecord"
 LIST_NOTIFICATIONS_EP = f"{BASE_URL}/app.bsky.notification.listNotifications"
 SEARCH_POSTS_EP = f"{BASE_URL}/app.bsky.feed.searchPosts"
+RESOLVE_HANDLE_EP = f"{BASE_URL}/com.atproto.identity.resolveHandle"
 
 
 class BlueskyError(Exception):
@@ -327,6 +328,26 @@ def follow(subject_did: str, session: Optional[Dict[str, Any]] = None) -> Dict[s
     """Follow an account: createRecord on app.bsky.graph.follow (subject is the DID). Real network call."""
     session = session or create_session()
     return _create_record(FOLLOW_COLLECTION, build_follow_record(subject_did), session)
+
+
+def resolve_handle(handle: str, session: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    Resolve a Bluesky handle (e.g. "simonwillison.net") to its DID via
+    com.atproto.identity.resolveHandle. Returns the DID, or None if it can't be
+    resolved (renamed/deleted handle) — never raises for a not-found, so a bad
+    watchlist entry can't crash the caller. Real network call (a read).
+    """
+    handle = (handle or "").strip().lstrip("@")
+    if not handle:
+        return None
+    session = session or create_session()
+    url = f"{RESOLVE_HANDLE_EP}?handle={urllib.parse.quote(handle, safe='')}"
+    try:
+        result = _request("GET", url, headers=_auth_headers(session))
+    except BlueskyError as exc:
+        print(f"[bluesky] resolve_handle failed for {handle!r}: {exc}")
+        return None
+    return result.get("did")
 
 
 # ---------------------------------------------------------------------------

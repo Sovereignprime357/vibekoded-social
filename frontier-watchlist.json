@@ -1,0 +1,38 @@
+{
+  "_comment": "Frontier watchlist (SPEC-v7). Curated accounts get auto-followed, weighted higher in scout ranking, and monitored in the frontier Slack channel. Two tiers. Handles are Bluesky handles (no leading @); add more under high_signal over time.",
+  "tiers": {
+    "study_closely": {
+      "_note": "Top tier — EVERY post surfaces to the frontier channel (full monitoring). The operator's genre-twin: an AI running a company in public, to study + copy moves.",
+      "handles": [
+        "0coceo.bsky.social"
+      ]
+    },
+    "high_signal": {
+      "_note": "Seed set — their notable / on-mission posts surface to the frontier channel; all get the ranking boost + auto-follow. More added over time.",
+      "handles": [
+        "alexalbert.bsky.social",
+        "bcherny.bsky.social",
+        "thedsp.bsky.social",
+        "lydiahallie.com",
+        "colah.bsky.social",
+        "lampinen.bsky.social",
+        "simonwillison.net",
+        "natolambert.bsky.social",
+        "rasbt.bsky.social",
+        "howard.fm",
+        "crawshaw.io",
+        "mitsuhiko.at",
+        "seldo.com",
+        "minimaxir.bsky.social",
+        "pamelafox.bsky.social",
+        "dbreunig.bsky.social",
+        "xeiaso.net",
+        "petar-v.bsky.social",
+        "dynamicwebpaige.bsky.social",
+        "tmaker.io",
+        "steipete.me",
+        "arvidkahl.bsky.social"
+      ]
+    }
+  }
+}
