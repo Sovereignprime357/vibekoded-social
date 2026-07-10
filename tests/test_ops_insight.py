@@ -97,7 +97,7 @@ def test_harvest_posts_only_flagged(monkeypatch, tmp_path):
     seen = str(tmp_path / "seen.jsonl")
     posted = _wire_harvest(monkeypatch, flags=[True, False])
     n = oi.harvest([_item("at://a1"), _item("at://a2")], dry_run=False,
-                   token="xoxb", channel="C_OPS", seen_path=seen)
+                   token="xoxb", channel="C_OPS", seen_path=seen, log_path=str(tmp_path / "log.jsonl"))
     assert n == 1
     assert len(posted) == 1 and posted[0][0] == "C_OPS"
     rows = {json.loads(l)["uri"]: json.loads(l)["status"] for l in open(seen, encoding="utf-8") if l.strip()}
@@ -110,7 +110,7 @@ def test_harvest_dedups_seen(monkeypatch, tmp_path):
     with open(seen, "w", encoding="utf-8") as f:
         f.write(json.dumps({"uri": "at://dupe", "status": "posted"}) + "\n")
     posted = _wire_harvest(monkeypatch, flags=[True])
-    n = oi.harvest([_item("at://dupe")], dry_run=False, token="x", channel="C", seen_path=seen)
+    n = oi.harvest([_item("at://dupe")], dry_run=False, token="x", channel="C", seen_path=seen, log_path=str(tmp_path / "log.jsonl"))
     assert n == 0 and posted == []   # already seen -> never re-surfaced (I-DEDUP)
 
 
@@ -118,7 +118,7 @@ def test_harvest_respects_max_per_tick(monkeypatch, tmp_path):
     seen = str(tmp_path / "seen.jsonl")
     posted = _wire_harvest(monkeypatch, flags=[True, True, True, True])
     items = [_item(f"at://f{i}") for i in range(4)]
-    n = oi.harvest(items, dry_run=False, token="x", channel="C", seen_path=seen, max_per_tick=2)
+    n = oi.harvest(items, dry_run=False, token="x", channel="C", seen_path=seen, log_path=str(tmp_path / "log.jsonl"), max_per_tick=2)
     assert n == 2   # hard cap on deep extracts/posts this tick
 
 
@@ -127,7 +127,7 @@ def test_harvest_guard_blocks_leaking_brief(monkeypatch, tmp_path):
     # A brief whose insight leaks a hardcoded-floor term -> REAL guard blocks it.
     leaking = {"insight": "shayler said to cache prompts", "applies": "", "effect": "", "why_improves": ""}
     posted = _wire_harvest(monkeypatch, flags=[True], brief=leaking)
-    n = oi.harvest([_item("at://leak")], dry_run=False, token="x", channel="C", seen_path=seen)
+    n = oi.harvest([_item("at://leak")], dry_run=False, token="x", channel="C", seen_path=seen, log_path=str(tmp_path / "log.jsonl"))
     assert n == 0 and posted == []    # never posted (I-PRIVACY fail-closed)
     rows = [json.loads(l) for l in open(seen, encoding="utf-8") if l.strip()]
     assert rows[0]["status"] == "guard_blocked"
@@ -138,7 +138,7 @@ def test_harvest_extract_decline_marks_seen(monkeypatch, tmp_path):
     posted = _wire_harvest(monkeypatch, flags=[True], brief=None)  # extractor declined
     # extract_brief patched to return None
     monkeypatch.setattr(oi, "extract_brief", lambda it, mid=None: None)
-    n = oi.harvest([_item("at://x")], dry_run=False, token="x", channel="C", seen_path=seen)
+    n = oi.harvest([_item("at://x")], dry_run=False, token="x", channel="C", seen_path=seen, log_path=str(tmp_path / "log.jsonl"))
     assert n == 0 and posted == []
     assert [json.loads(l) for l in open(seen, encoding="utf-8") if l.strip()][0]["status"] == "extract_empty"
 
@@ -146,7 +146,7 @@ def test_harvest_extract_decline_marks_seen(monkeypatch, tmp_path):
 def test_harvest_dry_run_writes_nothing(monkeypatch, tmp_path):
     seen = str(tmp_path / "seen.jsonl")
     posted = _wire_harvest(monkeypatch, flags=[True])
-    n = oi.harvest([_item("at://d")], dry_run=True, token="x", channel="C", seen_path=seen)
+    n = oi.harvest([_item("at://d")], dry_run=True, token="x", channel="C", seen_path=seen, log_path=str(tmp_path / "log.jsonl"))
     assert n == 0
     assert posted == []                       # no post
     assert not os.path.exists(seen)           # side-effect-free preview (no ledger write)
@@ -167,10 +167,72 @@ def test_harvest_never_imports_brain_or_memory():
     assert "import generate" in src and "import guard" in src
 
 
-def test_harvest_only_persistent_write_is_the_seen_ledger(monkeypatch, tmp_path):
-    # I-NO-AUTO-BRAIN, functional: a full posted harvest writes ONLY the seen
-    # ledger we hand it — no other file appears in the tmp dir.
+def test_harvest_only_persistent_writes_are_repo_ledgers(monkeypatch, tmp_path):
+    # I-NO-AUTO-BRAIN, functional: a full posted harvest writes ONLY the repo
+    # ledgers we hand it (the seen ledger + the log bridge) — no brain/memory, no
+    # other file anywhere.
     seen = str(tmp_path / "seen.jsonl")
     _wire_harvest(monkeypatch, flags=[True])
-    oi.harvest([_item("at://only")], dry_run=False, token="x", channel="C", seen_path=seen)
-    assert os.listdir(tmp_path) == ["seen.jsonl"]   # nothing else written anywhere
+    oi.harvest([_item("at://only")], dry_run=False, token="x", channel="C", seen_path=seen, log_path=str(tmp_path / "log.jsonl"))
+    assert set(os.listdir(tmp_path)) == {"seen.jsonl", "log.jsonl"}
+
+
+# --- LOG BRIDGE (SPEC-v6.1): mirror briefs to ops-intel-log.jsonl -----------
+
+def test_stable_id_is_deterministic():
+    assert oi._stable_id("at://x") == oi._stable_id("at://x")
+    assert oi._stable_id("at://x") != oi._stable_id("at://y")
+
+
+def test_append_log_writes_full_brief_with_provenance(tmp_path):
+    log = str(tmp_path / "log.jsonl")
+    item = {"uri": "at://p1", "author_handle": "b.bsky.social", "url": "https://bsky.app/x"}
+    assert oi.append_log(_brief(), item, log) is True
+    rec = json.loads(open(log, encoding="utf-8").readline())
+    assert rec["source_uri"] == "at://p1"
+    assert rec["id"] == oi._stable_id("at://p1")
+    assert rec["author_handle"] == "b.bsky.social" and rec["link"] == "https://bsky.app/x"
+    assert rec["insight"] == "X" and rec["applies"] == "Y" and rec["effect"] == "Z" and rec["why_improves"] == "W"
+    assert rec["ts"]
+
+
+def test_append_log_dedups_by_source_uri(tmp_path):
+    log = str(tmp_path / "log.jsonl")
+    item = {"uri": "at://dupe", "author_handle": "b", "url": "https://x"}
+    assert oi.append_log(_brief(), item, log) is True
+    assert oi.append_log(_brief(), item, log) is False   # logged once
+    rows = [l for l in open(log, encoding="utf-8") if l.strip()]
+    assert len(rows) == 1
+
+
+def test_harvest_logs_posted_brief(monkeypatch, tmp_path):
+    seen = str(tmp_path / "seen.jsonl"); log = str(tmp_path / "log.jsonl")
+    _wire_harvest(monkeypatch, flags=[True])
+    oi.harvest([_item("at://logme")], dry_run=False, token="x", channel="C", seen_path=seen, log_path=log)
+    rec = json.loads(open(log, encoding="utf-8").readline())
+    assert rec["source_uri"] == "at://logme" and rec["insight"]
+
+
+def test_harvest_logs_even_when_slack_post_fails(monkeypatch, tmp_path):
+    seen = str(tmp_path / "seen.jsonl"); log = str(tmp_path / "log.jsonl")
+    monkeypatch.setattr(oi, "flag_items", lambda items, model=None: [True])
+    monkeypatch.setattr(oi, "extract_brief", lambda it, mid=None: _brief())
+    monkeypatch.setattr(oi, "post_brief", lambda *a, **k: False)   # Slack rejects (bot not in channel)
+    oi.harvest([_item("at://failpost")], dry_run=False, token="x", channel="C", seen_path=seen, log_path=log)
+    # The intel is still captured for the nightly even though Slack failed.
+    assert json.loads(open(log, encoding="utf-8").readline())["source_uri"] == "at://failpost"
+
+
+def test_harvest_dry_run_does_not_log(monkeypatch, tmp_path):
+    seen = str(tmp_path / "seen.jsonl"); log = str(tmp_path / "log.jsonl")
+    _wire_harvest(monkeypatch, flags=[True])
+    oi.harvest([_item("at://d")], dry_run=True, token="x", channel="C", seen_path=seen, log_path=log)
+    assert not os.path.exists(log)   # side-effect-free preview
+
+
+def test_harvest_guard_blocked_not_logged(monkeypatch, tmp_path):
+    seen = str(tmp_path / "seen.jsonl"); log = str(tmp_path / "log.jsonl")
+    leaking = {"insight": "shayler's trick", "applies": "", "effect": "", "why_improves": ""}
+    _wire_harvest(monkeypatch, flags=[True], brief=leaking)
+    oi.harvest([_item("at://leak2")], dry_run=False, token="x", channel="C", seen_path=seen, log_path=log)
+    assert not os.path.exists(log)   # a guard-blocked brief is never logged
