@@ -130,6 +130,27 @@ def load_actionable(
     return [rec for _, rec in recent[:max_items]]
 
 
+def load_targeted(target_ts: str, target_channel: Optional[str] = None,
+                  path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    TARGETED (event-driven) mode: the specific surfaced item(s) the operator just
+    👍'd, looked up by the reacted message's slack_ts (+ channel if given). Reads
+    the full ledger but matches by ts, so it's O(1) intent — one item, one
+    reactions.get to re-verify — no backlog scan, no rate-limit exposure.
+    """
+    target_ts = str(target_ts or "").strip()
+    if not target_ts:
+        return []
+    out: List[Dict[str, Any]] = []
+    for rec in _iter_surfaced(path):
+        if rec.get("slack_ts") != target_ts:
+            continue
+        if target_channel and rec.get("slack_channel") != target_channel:
+            continue
+        out.append(rec)
+    return out
+
+
 def expire_stale(
     acted_uris: Set[str],
     now: Optional[float] = None,
@@ -251,14 +272,32 @@ def run_tick() -> int:
 
     now = time.time()
     acted_uris, today_counts = load_acted()
-    # Retire stale un-acted items so the poll set can't grow unbounded (the backlog
-    # that tripped Slack's reactions.get rate limit), then poll only the RECENT,
-    # capped window — keeps reactions.get calls/tick well under Slack's ~50/min.
-    acted_uris |= expire_stale(acted_uris, now=now)
-    actionable = load_actionable(now=now)
-    if not actionable:
-        print("[act_tick] no recent actionable surfaced items to poll this tick; done.")
-        return 0
+
+    # EVENT-DRIVEN targeting (SPEC-v4.1): when woken by a Slack reaction_added event,
+    # scout-act passes the reacted message's ts+channel (client_payload) as
+    # ACT_TARGET_TS/ACT_TARGET_CHANNEL. Act on THAT one item instantly — no backlog
+    # scan, one reactions.get to re-verify. Absent (cron/heartbeat fallback) -> the
+    # bounded recent poll. Either way the SAME gate/execute loop below runs, and
+    # idempotency is via acted_uris (act-log) so the webhook + the poll can't
+    # double-act the same item.
+    target_ts = os.environ.get("ACT_TARGET_TS", "").strip()
+    target_channel = os.environ.get("ACT_TARGET_CHANNEL", "").strip() or None
+    if target_ts:
+        actionable = load_targeted(target_ts, target_channel)
+        print(f"[act_tick] EVENT-TARGETED mode: ts={target_ts} channel={target_channel} "
+              f"-> {len(actionable)} matching surfaced item(s)")
+        if not actionable:
+            print("[act_tick] no surfaced item matches the reacted ts (not an actionable message); done.")
+            return 0
+    else:
+        # Retire stale un-acted items so the poll set can't grow unbounded (the backlog
+        # that tripped Slack's reactions.get rate limit), then poll only the RECENT,
+        # capped window — keeps reactions.get calls/tick well under Slack's ~50/min.
+        acted_uris |= expire_stale(acted_uris, now=now)
+        actionable = load_actionable(now=now)
+        if not actionable:
+            print("[act_tick] no recent actionable surfaced items to poll this tick; done.")
+            return 0
 
     caps = act.load_caps()
     pacing_seconds = act.load_pacing_seconds()

@@ -94,6 +94,11 @@ jobs:
           ACT_POLL_MAX_ITEMS: ${{ vars.ACT_POLL_MAX_ITEMS || '40' }}
           ACT_EXPIRE_HOURS: ${{ vars.ACT_EXPIRE_HOURS || '72' }}
           ACT_REACTION_POLL_SLEEP: ${{ vars.ACT_REACTION_POLL_SLEEP || '0.7' }}
+          # EVENT-DRIVEN targeting (SPEC-v4.1): on a Slack reaction_added dispatch,
+          # act on the EXACT reacted item instantly (no backlog scan). Empty for
+          # schedule/heartbeat/manual runs -> act_tick falls back to the bounded poll.
+          ACT_TARGET_TS: ${{ github.event.client_payload.reacted_ts }}
+          ACT_TARGET_CHANNEL: ${{ github.event.client_payload.reacted_channel }}
           # Earn-it ladder: which conversation reply-back CLASSES may post WITHOUT
           # a 👍 (autonomous). Default OFF -> everything human-gated. Set e.g.
           # "appreciation" or "all" ONLY once a class has proven out.
