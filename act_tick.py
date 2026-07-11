@@ -399,7 +399,7 @@ def run_tick() -> int:
         _log_act(record)
         status = result.get("status", "")
         print(f"[act_tick] {action} on {uri} -> {status}"
-              + (f" ({result.get('reason')})" if status == "guard_blocked" else ""))
+              + (f" ({result.get('reason')})" if status in ("guard_blocked", "voice_blocked") else ""))
 
         if status == "executed":
             today_counts[action] = today_counts.get(action, 0) + 1
