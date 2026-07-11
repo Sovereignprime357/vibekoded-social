@@ -50,6 +50,9 @@ jobs:
           GEN_MODEL: anthropic
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Operator VOICE PROFILE (the moat) — a SECRET, never committed. Injected
+          # into generation + enforced by the mechanical voice gate. Absent -> safe-degrade.
+          VOICE_PROFILE: ${{ secrets.VOICE_PROFILE }}
           # Conversation-continuation (converse.py): surface reply-backs via the
           # bot token so each carries a Slack ts and act_tick can gate on the 👍.
           # Falls back to webhook/print if the token isn't set (safe-degrade).

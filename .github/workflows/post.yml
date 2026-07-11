@@ -56,6 +56,9 @@ jobs:
           BSKY_APP_PASSWORD: ${{ secrets.BSKY_APP_PASSWORD }}
           GEN_MODEL: anthropic
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Operator VOICE PROFILE (the moat) — a SECRET, never committed. Injected
+          # into generation + enforced by the mechanical voice gate. Absent -> safe-degrade.
+          VOICE_PROFILE: ${{ secrets.VOICE_PROFILE }}
           # DRY_RUN is a repo VARIABLE (not secret) so it's easy to flip
           # from the Actions UI without touching secrets. Defaults to "0"
           # (live) — set the repo variable DRY_RUN=1 to pause live posting

@@ -23,6 +23,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
+import voice
+
 MAX_POST_LENGTH = 300
 
 PERSONA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PERSONA.md")
@@ -208,7 +210,12 @@ def build_prompt(entry: Dict[str, Any], kind: str = "post") -> str:
     else:
         raise ValueError(f"unknown kind {kind!r}")
 
-    return f"{persona}\n\n---\n\nTASK\n\n{task}"
+    # Inject the operator's VOICE PROFILE (secret, env-loaded) into EVERY kind —
+    # posts AND replies/banter/draft_reply (the reply path is where the sycophancy
+    # lives). Empty when the secret is absent (safe-degrade -> base persona only).
+    # NB: the prompt is a best-effort steer; the mechanical gate in generate() is
+    # what actually ENFORCES it, because a model won't reliably obey the prompt.
+    return f"{persona}{voice.voice_profile_block()}\n\n---\n\nTASK\n\n{task}"
 
 
 # ---------------------------------------------------------------------------
@@ -427,8 +434,20 @@ def generate(entry: Dict[str, Any], kind: str = "post", retries: int = 2) -> str
                 raw_output = _call_anthropic(prompt, api_key)
             cleaned = clean_output(raw_output)
             if cleaned:
-                return cleaned
-            last_exc = GenerationError("model returned empty output after cleaning")
+                # THE MECHANICAL VOICE GATE (do NOT rely on the prompt): reject
+                # em-dashes and praise-openers post-generation. You can't prompt
+                # sycophancy out of a model — it's trained in and leaks — so the
+                # guard is external and can FAIL. On failure: regenerate (this loop),
+                # and if it never complies, return "" so the caller DROPS the item
+                # rather than posting sycophantic slop. We log only the rule that
+                # tripped — never the text or the voice profile.
+                ok, why = voice.check_voice(cleaned)
+                if ok:
+                    return cleaned
+                print(f"[generate] voice gate REJECTED attempt {attempt}/{attempts} ({kind}): {why}; regenerating.")
+                last_exc = GenerationError(f"voice gate rejected: {why}")
+            else:
+                last_exc = GenerationError("model returned empty output after cleaning")
         except RateLimitError as exc:
             last_exc = exc
             wait = min(exc.retry_after or _BACKOFF_CAP_S, _BACKOFF_CAP_S)
@@ -439,10 +458,9 @@ def generate(entry: Dict[str, Any], kind: str = "post", retries: int = 2) -> str
             last_exc = exc
             print(f"[generate] attempt {attempt}/{attempts} failed: {exc}")
 
-    # Every retry failed. Fail closed here too: return empty string rather
-    # than raising all the way up, so the entrypoint's "if not text: skip"
-    # path handles it uniformly with a guard failure. Callers that need to
-    # distinguish "generation failed" from "guard blocked" can check for "".
+    # Every retry failed (model error OR the voice gate kept rejecting). Fail closed:
+    # return "" so the caller DROPS the item (post_tick skips, converse/refill don't
+    # surface) rather than shipping non-compliant text. Better silence than slop.
     print(f"[generate] all {attempts} attempt(s) exhausted; last error: {last_exc}")
     return ""
 
