@@ -62,11 +62,19 @@ def run_tick() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[refill_tick] generate/surface errored (non-fatal): {exc!r}")
 
-    # Queue-empty guardrail (the silent-drain fix).
+    # Queue-health guardrails (the silent-failure fixes):
+    #  - queue EMPTY (0 unused) -> the silent-drain alert.
+    #  - queue NON-empty but rotation blocks every item (get_next_rotated -> None)
+    #    -> the silent-DEADLOCK alert (today's bug: only a META item queued, rotation
+    #    correctly won't post it, and it was invisible). recent_pillars drives the
+    #    same rotation check post_tick uses.
     try:
-        content_refill.queue_empty_alert(token, channel, dry_run=dry)
+        fired_empty = content_refill.queue_empty_alert(token, channel, dry_run=dry)
+        if not fired_empty:
+            recent = post_tick._recent_pillars(n=content_refill.META_WINDOW)
+            content_refill.queue_rotation_blocked_alert(recent, token, channel, dry_run=dry)
     except Exception as exc:  # noqa: BLE001
-        print(f"[refill_tick] queue_empty_alert errored (non-fatal): {exc!r}")
+        print(f"[refill_tick] queue-health alert errored (non-fatal): {exc!r}")
 
     print("[refill_tick] done.")
     return 0
