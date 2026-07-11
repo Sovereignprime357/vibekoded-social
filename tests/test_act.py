@@ -166,8 +166,10 @@ def test_reply_drafts_and_posts_when_clean(monkeypatch):
 def test_reply_guard_blocks_and_posts_nothing(monkeypatch):
     """The critical safety test: a draft that trips the guard must NOT be posted."""
     calls = _patch_bluesky(monkeypatch)
-    # A draft that leaks a hardcoded-floor term (real guard, not mocked).
-    monkeypatch.setattr(act, "_draft_reply", lambda item: "great point — my daughter loved this build too")
+    # A draft that leaks a hardcoded-floor term (real guard, not mocked). Kept
+    # voice-clean (no dash, no praise-opener) so it clears the voice gate and the
+    # PRIVACY guard is what blocks it.
+    monkeypatch.setattr(act, "_draft_reply", lambda item: "my daughter loved this build too, honestly")
     res = act.execute_action(_item("reply"))
     assert res["status"] == "guard_blocked"
     assert res["reason"]                      # explains what was blocked
@@ -220,9 +222,80 @@ def test_reply_uses_pre_drafted_text_and_thread_refs(monkeypatch):
 
 
 def test_reply_pre_drafted_text_still_guarded(monkeypatch):
-    """Even a pre-drafted converse reply is re-guarded at act time (safety net)."""
+    """Even a pre-drafted converse reply is re-guarded at act time (safety net).
+
+    The draft is voice-clean (no dash, no praise-opener) so it clears the voice
+    gate and reaches the PRIVACY guard — proving the privacy guard still fires and
+    still wins on a stored draft after the voice gate was added ahead of it.
+    """
     calls = _patch_bluesky(monkeypatch)
-    item = _item("reply", source="converse", draft_text="thanks — my daughter loved it")
+    # If the voice gate mistakenly tripped, it would regenerate via _draft_reply;
+    # make that a hard failure so this test proves privacy blocked it directly.
+    monkeypatch.setattr(act, "_draft_reply", lambda item: (_ for _ in ()).throw(AssertionError("should not re-draft: voice-clean")))
+    item = _item("reply", source="converse", draft_text="thanks, my daughter loved it")
     res = act.execute_action(item)
-    assert res["status"] == "guard_blocked"
+    assert res["status"] == "guard_blocked"   # privacy fired and won
+    assert calls == []
+
+
+# --- STALE-DRAFT voice hole: the voice gate runs at the execute boundary --------
+# A card can sit in Slack having been drafted BEFORE the VOICE_PROFILE secret
+# existed. Thumbing it must NOT post the old sycophantic bytes verbatim: the gate
+# runs here on the exact text about to hit Bluesky (voice -> privacy -> post).
+
+def test_stale_bad_draft_regenerates_clean_and_posts_that(monkeypatch):
+    """Stored draft trips the voice gate -> regenerated fresh; the CLEAN regen posts."""
+    calls = _patch_bluesky(monkeypatch)
+    clean = "we run a flat file plus an index. how are you handling it?"
+    # _draft_reply stands in for generate() (profile-injected + gated) -> clean text.
+    monkeypatch.setattr(act, "_draft_reply", lambda item: clean)
+    item = _item("reply", source="converse",
+                 draft_text="that's the move — keeps the data yours.")  # opener + em-dash
+    res = act.execute_action(item)
+    assert res["status"] == "executed"
+    assert res["posted_text"] == clean                 # the regenerated text, not the stale bytes
+    assert calls == [("reply", clean, "at://post/1")]  # posted exactly the clean regen
+
+
+def test_stale_bad_draft_regen_drops_returns_voice_blocked(monkeypatch):
+    """Stored bad draft + a model that stays sycophantic -> generate() drops -> no post."""
+    calls = _patch_bluesky(monkeypatch)
+    # generate() exhausted its own retries and dropped -> _draft_reply returns "".
+    monkeypatch.setattr(act, "_draft_reply", lambda item: "")
+    item = _item("reply", source="converse",
+                 draft_text="great question — here's the thing.")
+    res = act.execute_action(item)
+    assert res["status"] == "voice_blocked"
+    assert res["reason"] and "draft" not in res        # rule only, never the body
+    assert calls == []                                 # bluesky.reply NEVER called
+
+
+def test_stale_clean_draft_posts_unchanged_no_regen(monkeypatch):
+    """A voice-clean stored draft posts verbatim and is NOT regenerated (no token burn)."""
+    calls = _patch_bluesky(monkeypatch)
+    monkeypatch.setattr(act, "_draft_reply", lambda item: (_ for _ in ()).throw(AssertionError("should not re-draft a clean stored draft")))
+    clean = "shipped the memory scaffold today. what are you using?"
+    item = _item("reply", source="converse", draft_text=clean)
+    res = act.execute_action(item)
+    assert res["status"] == "executed"
+    assert res["posted_text"] == clean
+    assert calls == [("reply", clean, "at://post/1")]
+
+
+def test_scout_item_no_draft_text_drafts_fresh_and_gated(monkeypatch):
+    """No stored draft -> fresh draft via generate() (already gated); clean -> posts."""
+    calls = _patch_bluesky(monkeypatch)
+    monkeypatch.setattr(act, "_draft_reply", lambda item: "curious how you shard the index. we keep it flat.")
+    res = act.execute_action(_item("reply"))   # no draft_text
+    assert res["status"] == "executed"
+    assert calls and calls[0][0] == "reply"
+
+
+def test_fresh_draft_failing_voice_gate_is_voice_blocked(monkeypatch):
+    """Defense-in-depth: if a FRESH draft somehow returns dirty text, drop it (voice_blocked)."""
+    calls = _patch_bluesky(monkeypatch)
+    # A fresh draft that still carries an em-dash (generate's own gate bypassed here).
+    monkeypatch.setattr(act, "_draft_reply", lambda item: "keeps the data yours — nice.")
+    res = act.execute_action(_item("reply"))   # no draft_text -> fresh
+    assert res["status"] == "voice_blocked"
     assert calls == []

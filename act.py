@@ -31,6 +31,7 @@ import requests
 import bluesky
 import generate
 import guard
+import voice
 
 # Slack reaction names for a thumbsup. Slack appends "::skin-tone-N" to
 # skin-toned variants; we match on the base name, so all tones count.
@@ -54,7 +55,7 @@ DEFAULT_MAX_PER_TICK = 3
 # Terminal statuses: the item is done and must never fire again (I-LOGGED, no
 # double-fire). Transient statuses (awaiting thumbsup, cap reached) are NOT
 # written to the act log, so they're retried on a later tick.
-TERMINAL_STATUSES = {"executed", "guard_blocked", "skipped_self", "empty_draft", "error", "expired"}
+TERMINAL_STATUSES = {"executed", "guard_blocked", "voice_blocked", "skipped_self", "empty_draft", "error", "expired"}
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +302,14 @@ def execute_action(
 
     like / repost -> createRecord with the post's (uri, cid). No model.
     follow        -> createRecord on the author's DID. No model.
-    reply / quote -> draft in PERSONA voice, run the fail-closed privacy guard
-                     (incl. extended client/project terms), and ONLY post if it
-                     passes. A guard block returns status="guard_blocked" and
-                     posts NOTHING — dropped, never sanitized-and-hoped (I-PRIVACY).
+    reply / quote -> resolve the draft (fresh, or a stored draft_text from surface
+                     time), then run TWO boundary gates in order: the mechanical
+                     VOICE gate (regenerating a stale stored draft that fails, since
+                     a stale approval isn't consent for pre-profile text) and the
+                     fail-closed PRIVACY guard. BOTH must pass to post. A voice
+                     failure returns status="voice_blocked"; a privacy failure
+                     returns "guard_blocked". Either drops the item and posts
+                     NOTHING — never sanitized-and-hoped (I-PRIVACY / voice gate).
 
     For a reply we use the surfaced post as both the reply root and parent. Scout
     surfaces standalone search hits, for which the post IS the thread root; this
@@ -349,10 +354,38 @@ def execute_action(
         if not parent_uri or not parent_cid:
             return {**base, "status": "error", "detail": "missing uri/cid for reply"}
         # A converse item was drafted + guarded at surface time; use that exact
-        # text (re-guarded below as the safety net). Scout items draft fresh now.
-        draft = item.get("draft_text") or _draft_reply(item)
+        # text (re-gated below as the safety net). Scout items draft fresh now,
+        # which routes through generate() and is already profile-injected + gated.
+        stored_text = item.get("draft_text")
+        from_stored = bool(stored_text and str(stored_text).strip())
+        draft = stored_text if from_stored else _draft_reply(item)
         if not draft or not draft.strip():
             return {**base, "status": "empty_draft", "detail": "no draft text"}
+
+        # --- VOICE GATE, at the boundary (defense-in-depth). Execute time is the
+        # ONLY place that sees the exact bytes about to hit Bluesky, so — exactly
+        # like the privacy guard below — the voice gate runs HERE, not just at the
+        # generation "factory". A stored draft_text was written at SURFACE time,
+        # possibly before the VOICE_PROFILE secret existed (or by an earlier
+        # model), so its bytes never met the gate. A stale approval is NOT consent
+        # for the old text: if a STORED draft fails, regenerate fresh through
+        # generate() (now profile-injected AND voice-gated) and post THAT instead.
+        vok, vwhy = voice.check_voice(draft)
+        if not vok and from_stored:
+            draft = _draft_reply(item)
+            if not draft or not draft.strip():
+                # generate() dropped every attempt after its own retries -> the
+                # model won't produce compliant text; do NOT fall back to the
+                # stale bytes. Drop. (reason = the rule the stale draft tripped.)
+                return {**base, "status": "voice_blocked", "reason": vwhy}
+            vok, vwhy = voice.check_voice(draft)
+        if not vok:
+            # Freshly-generated text that STILL fails -> drop, don't sanitize.
+            # reason is the rule that tripped only; never the draft body/profile.
+            return {**base, "status": "voice_blocked", "reason": vwhy}
+
+        # --- PRIVACY GUARD (I-PRIVACY), on whatever final text survived the voice
+        # gate. Order is voice -> privacy -> post; BOTH must pass to ship.
         ok, reason = guard.check(draft)
         if not ok:
             # I-PRIVACY: drop it. Never post, never sanitize. Log for review.
