@@ -519,3 +519,76 @@ def queue_empty_alert(
         print("[content_refill] posted queue-empty alert.")
         return True
     return False
+
+
+def queue_rotation_blocked_alert(
+    recent_pillars: Optional[List[str]] = None,
+    token: Optional[str] = None,
+    channel: Optional[str] = None,
+    dry_run: Optional[bool] = None,
+    state_path: Optional[str] = None,
+    now: Optional[float] = None,
+) -> bool:
+    """
+    The SILENT-DEADLOCK alert (SPEC-content-refill v1.1): the queue is NON-empty but
+    pillar rotation blocks EVERY item (get_next_rotated -> None), so post_tick skips
+    forever with no signal. That's how "a week disappears". Post a loud, actionable
+    alert to the review channel naming which pillars are queued vs blocked and exactly
+    what to do. This does NOT weaken the rotation guard — it just breaks the silence.
+
+    Non-spammy: alert on entering a NEW blocked state (by content signature) OR at most
+    once per cooldown while a blocked state persists. Returns True if alerted.
+    (Empty queue is handled by queue_empty_alert; healthy queue -> no-op + clears the
+    blocked marker so a future block re-alerts.)
+    """
+    dry_run = _is_dry_run() if dry_run is None else dry_run
+    token = token if token is not None else os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    channel = channel or _channel()
+    state_path = state_path or STATE_PATH
+    now = time.time() if now is None else now
+
+    unused = content_queue.get_all_unused()
+    if not unused:
+        return False  # empty -> queue_empty_alert owns this
+    if content_queue.get_next_rotated(recent_pillars=recent_pillars) is not None:
+        # Healthy: something IS postable. Clear any prior blocked marker so the next
+        # time we enter a blocked state we alert again (don't let it be a one-time).
+        state = _load_state(state_path)
+        if state.get("last_blocked_sig") or state.get("last_blocked_alert"):
+            state.pop("last_blocked_sig", None)
+            state.pop("last_blocked_alert", None)
+            if not dry_run:
+                _save_state(state_path, state)
+        return False
+
+    # Rotation-blocked. Build a self-explanatory breakdown.
+    counts: Dict[str, int] = {}
+    for r in unused:
+        p = (r.get("pillar") or "untagged").strip().lower()
+        counts[p] = counts.get(p, 0) + 1
+    breakdown = ", ".join(f"{n}×{p}" for p, n in sorted(counts.items()))
+    sig = f"{len(unused)}|{breakdown}"
+    last_posted = (recent_pillars or ["none"])[0] or "none"
+
+    state = _load_state(state_path)
+    same = state.get("last_blocked_sig") == sig
+    last_ts = float(state.get("last_blocked_alert", 0) or 0)
+    if same and last_ts and (now - last_ts) < EMPTY_ALERT_COOLDOWN_S:
+        return False  # same blocked state, alerted recently -> no spam
+
+    msg = (
+        f"⚠️ *QUEUE ROTATION-BLOCKED* — {len(unused)} item(s) queued but NONE postable. "
+        f"Queued: {breakdown}. Last posted pillar: *{last_posted}*.\n"
+        "Rotation won't post META back-to-back or more than 1-in-5, and won't repeat the "
+        "last pillar — so the queue is stuck. 👍 a *non-META* candidate in this channel to unblock."
+    )
+    if dry_run:
+        print(f"[content_refill] DRY_RUN rotation-blocked alert: {msg}")
+        return True
+    if token and _post_slack_web(msg, token, channel):
+        state["last_blocked_sig"] = sig
+        state["last_blocked_alert"] = now
+        _save_state(state_path, state)
+        print("[content_refill] posted rotation-blocked alert.")
+        return True
+    return False

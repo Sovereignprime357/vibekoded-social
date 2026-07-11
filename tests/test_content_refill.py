@@ -204,3 +204,79 @@ def test_queue_empty_alert_silent_when_queue_has_entries(tmp_path, monkeypatch):
     content_queue.append_entry(raw="something", type="moment", path=queue)  # 1 unused
     assert cr.queue_empty_alert(token="xoxb", channel="C", dry_run=False,
                                 state_path=str(tmp_path / "s.json"), now=1000.0) is False
+
+
+# --- SPEC-content-refill v1.1: rotation-blocked (silent-deadlock) alert ------
+
+def _queue_with(monkeypatch, tmp_path, entries):
+    q = str(tmp_path / "q.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", q)
+    for e in entries:
+        content_queue.append_entry(raw=e["raw"], type=e.get("type", "moment"),
+                                   pillar=e["pillar"], final_text=e["raw"], path=q)
+    return q
+
+
+def test_rotation_blocked_alert_fires_when_only_meta_queued(monkeypatch, tmp_path):
+    # Today's bug: the only unused entry is META, last post was meta -> get_next_rotated
+    # returns None -> post_tick skips silently. Now it alerts.
+    _queue_with(monkeypatch, tmp_path, [{"raw": "a meta bit", "pillar": "meta"}])
+    posts = []
+    monkeypatch.setattr(cr, "_post_slack_web", lambda t, tok, ch, timeout=15: (posts.append(t) or "1"))
+    fired = cr.queue_rotation_blocked_alert(["meta"], token="x", channel="C",
+                                            dry_run=False, state_path=str(tmp_path / "s.json"), now=1000.0)
+    assert fired is True
+    assert "ROTATION-BLOCKED" in posts[0]
+    assert "meta" in posts[0].lower() and "non-META" in posts[0]   # names the blocked pillar + the fix
+
+
+def test_rotation_alert_silent_when_something_postable(monkeypatch, tmp_path):
+    _queue_with(monkeypatch, tmp_path, [{"raw": "a showcase", "pillar": "showcase"}])
+    posts = []
+    monkeypatch.setattr(cr, "_post_slack_web", lambda *a, **k: (posts.append(1) or "1"))
+    fired = cr.queue_rotation_blocked_alert(["meta"], token="x", channel="C",
+                                            dry_run=False, state_path=str(tmp_path / "s.json"), now=1000.0)
+    assert fired is False and posts == []   # showcase IS postable after a meta post -> healthy
+
+
+def test_rotation_alert_silent_when_queue_empty(monkeypatch, tmp_path):
+    _queue_with(monkeypatch, tmp_path, [])   # empty -> queue_empty_alert owns it
+    fired = cr.queue_rotation_blocked_alert([], token="x", channel="C",
+                                            dry_run=False, state_path=str(tmp_path / "s.json"), now=1000.0)
+    assert fired is False
+
+
+def test_rotation_alert_no_repeat_spam(monkeypatch, tmp_path):
+    _queue_with(monkeypatch, tmp_path, [{"raw": "meta bit", "pillar": "meta"}])
+    posts = []
+    monkeypatch.setattr(cr, "_post_slack_web", lambda *a, **k: (posts.append(1) or "1"))
+    s = str(tmp_path / "s.json")
+    assert cr.queue_rotation_blocked_alert(["meta"], "x", "C", dry_run=False, state_path=s, now=1000.0) is True
+    # same blocked state, within cooldown -> NO re-alert (not every heartbeat)
+    assert cr.queue_rotation_blocked_alert(["meta"], "x", "C", dry_run=False, state_path=s, now=1500.0) is False
+    assert len(posts) == 1
+    # cooldown elapsed -> re-nag (don't let a week vanish)
+    later = 1000.0 + cr.EMPTY_ALERT_COOLDOWN_S + 1
+    assert cr.queue_rotation_blocked_alert(["meta"], "x", "C", dry_run=False, state_path=s, now=later) is True
+    assert len(posts) == 2
+
+
+def test_rotation_alert_healthy_clears_marker(monkeypatch, tmp_path):
+    s = str(tmp_path / "s.json")
+    q = _queue_with(monkeypatch, tmp_path, [{"raw": "meta bit", "pillar": "meta"}])
+    monkeypatch.setattr(cr, "_post_slack_web", lambda *a, **k: "1")
+    cr.queue_rotation_blocked_alert(["meta"], "x", "C", dry_run=False, state_path=s, now=1000.0)
+    assert "last_blocked_sig" in json.load(open(s, encoding="utf-8"))
+    # add a substance item -> now postable -> the healthy branch clears the marker
+    content_queue.append_entry(raw="a showcase", type="moment", pillar="showcase", final_text="a showcase", path=q)
+    cr.queue_rotation_blocked_alert(["meta"], "x", "C", dry_run=False, state_path=s, now=1200.0)
+    assert "last_blocked_sig" not in json.load(open(s, encoding="utf-8"))
+
+
+# --- #2 refill-side bias: batch is <=1 META + >=4 substance (already enforced) ---
+
+def test_batch_is_at_most_one_meta_four_substance():
+    for recent in ([], ["meta"], ["showcase"], ["meta", "showcase", "question", "operator"], ["showcase", "meta"]):
+        seq = cr.select_pillars(5, recent)
+        assert seq.count("meta") <= 1, (recent, seq)
+        assert sum(1 for p in seq if p != "meta") >= 4, (recent, seq)
