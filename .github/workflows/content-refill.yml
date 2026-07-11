@@ -51,6 +51,9 @@ jobs:
           GEN_MODEL: ${{ vars.GEN_MODEL || 'anthropic' }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Operator VOICE PROFILE (the moat) — a SECRET, never committed. Injected
+          # into generation + enforced by the mechanical voice gate. Absent -> safe-degrade.
+          VOICE_PROFILE: ${{ secrets.VOICE_PROFILE }}
           # Review channel (not secret -> default; bot is already invited).
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_REFILL: ${{ vars.SLACK_CHANNEL_REFILL || 'C0BGDT13CN7' }}
