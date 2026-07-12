@@ -207,3 +207,6 @@
 {"ts": "2026-07-11T23:33:10Z", "uri": "at://did:plc:n4765ftlk5sxhgd5low6rqbd/app.bsky.feed.post/3mq5zgjjsrs2b", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
 {"ts": "2026-07-11T23:33:10Z", "uri": "at://did:plc:juoe7vtx4dmyl2zsmzcf5rmd/app.bsky.feed.post/3mq5y5xb24kq2", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
 {"ts": "2026-07-11T23:33:10Z", "uri": "at://did:plc:fli4uo3gyesoar2f76ym4na6/app.bsky.feed.post/3mq64t6mayu2n", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
+{"ts": "2026-07-12T00:00:57Z", "action": "follow", "status": "executed", "author_did": "did:plc:wgdzguax6q5vw3ddevozzyrp", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-07-12T00:01:18Z", "action": "follow", "status": "executed", "author_did": "did:plc:nzev4hjdwuttjqdvdclp4pom", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-07-12T00:01:38Z", "action": "follow", "status": "executed", "author_did": "did:plc:sbknxpmvxtl4ljwihdaeao77", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
