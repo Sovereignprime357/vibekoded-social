@@ -111,6 +111,109 @@ def test_surface_writes_ledger_with_slack_ts(tmp_path, monkeypatch):
     assert row["slack_ts"] == "1700.5" and row["status"] == "surfaced" and row["slack_channel"] == "C_REFILL"
 
 
+# --- ROTATION-AWARE surfacing (the funnel fix) ------------------------------
+# We must not surface a candidate rotation would reject RIGHT NOW: a 👍 has to mean
+# "this will post". The trap was surfacing a blocked META and stacking it at the
+# bottom (easiest to react to), which quietly stalled the feed for days.
+
+def _cand(cid, pillar, text=None):
+    return {"id": cid, "text": text or f"a clean post {cid} about building with ai",
+            "pillar": pillar, "type": "moment", "source": "evergreen",
+            "provenance": {"source": "evergreen", "pillar": pillar}}
+
+
+def _capture_posts(monkeypatch):
+    """Fake Slack transport: 1 call per message, a distinct slack_ts each time."""
+    posts = []
+    def fake(text, token, channel, timeout=15):
+        posts.append(text)
+        return f"1700.{len(posts)}"
+    monkeypatch.setattr(cr, "_post_slack_web", fake)
+    return posts
+
+
+def _ledger_pillars(path):
+    rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+    return [r["pillar"] for r in rows]
+
+
+def test_surface_skips_meta_when_last_posted_meta(tmp_path, monkeypatch):
+    # Last post was META -> META is 1-in-5-capped -> a META candidate is NOT surfaced;
+    # the four non-META candidates ARE.
+    posts = _capture_posts(monkeypatch)
+    ledger = str(tmp_path / "s.jsonl")
+    cands = [_cand("m", "meta"), _cand("a", "showcase"), _cand("b", "operator"),
+             _cand("c", "ask-help"), _cand("d", "dreaming")]
+    n = cr.surface_candidates(cands, token="xoxb", channel="C", dry_run=False,
+                              surfaced_path=ledger, recent_pillars=["meta"])
+    assert n == 4
+    pillars = _ledger_pillars(ledger)
+    assert "meta" not in pillars
+    assert set(pillars) == {"showcase", "operator", "ask-help", "dreaming"}
+
+
+def test_surface_skips_same_pillar_as_last(tmp_path, monkeypatch):
+    # Last post was showcase -> no two-in-a-row -> a showcase candidate is NOT surfaced.
+    _capture_posts(monkeypatch)
+    ledger = str(tmp_path / "s.jsonl")
+    cands = [_cand("a", "showcase"), _cand("b", "operator"), _cand("c", "question")]
+    n = cr.surface_candidates(cands, token="xoxb", channel="C", dry_run=False,
+                              surfaced_path=ledger, recent_pillars=["showcase"])
+    assert n == 2
+    assert set(_ledger_pillars(ledger)) == {"operator", "question"}
+
+
+def test_surface_all_blocked_fires_alert_and_surfaces_nothing(tmp_path, monkeypatch):
+    # Every candidate shares the last pillar -> all blocked. Surface NOTHING, but do
+    # NOT go silent: fire the existing queue-health alert (empty first, else blocked).
+    posts = _capture_posts(monkeypatch)
+    ledger = str(tmp_path / "s.jsonl")
+    fired = []
+    monkeypatch.setattr(cr, "queue_empty_alert", lambda **k: fired.append("empty") or False)
+    monkeypatch.setattr(cr, "queue_rotation_blocked_alert", lambda **k: fired.append("blocked") or True)
+    cands = [_cand("a", "showcase"), _cand("b", "showcase")]
+    n = cr.surface_candidates(cands, token="xoxb", channel="C", dry_run=False,
+                              surfaced_path=ledger, recent_pillars=["showcase"])
+    assert n == 0
+    assert not os.path.exists(ledger)   # nothing surfaced, no ledger
+    assert posts == []                  # never posted a candidate card
+    assert fired == ["empty", "blocked"]  # empty checked first, then rotation-blocked
+
+
+def test_surface_never_leaves_meta_last_in_stack(tmp_path, monkeypatch):
+    # META (eligible here) must not be the BOTTOM card of the collapsed stack.
+    posts = _capture_posts(monkeypatch)
+    ledger = str(tmp_path / "s.jsonl")
+    # generation order puts meta LAST (the old trap); recent=[] so nothing is blocked.
+    cands = [_cand("a", "showcase"), _cand("b", "operator"), _cand("m", "meta")]
+    n = cr.surface_candidates(cands, token="xoxb", channel="C", dry_run=False,
+                              surfaced_path=ledger, recent_pillars=[])
+    assert n == 3
+    pillars = _ledger_pillars(ledger)
+    assert pillars[-1] != "meta"        # META never at the bottom of the stack
+    assert pillars[0] == "meta"         # floated to the top (deterministic)
+
+
+def test_eligible_card_states_its_pillar_on_its_own_line():
+    card = cr.format_candidate({"pillar": "ask-help", "source": "evergreen",
+                                "text": "how are you wiring approvals?"})
+    assert "PILLAR: ask-help" in card   # collapsed-stack ambiguity is readable
+
+
+def test_surface_one_slack_message_each_distinct_ts(tmp_path, monkeypatch):
+    # Don't regress: each surfaced candidate is its OWN Slack message with a distinct ts.
+    posts = _capture_posts(monkeypatch)
+    ledger = str(tmp_path / "s.jsonl")
+    cands = [_cand("a", "showcase"), _cand("b", "operator"), _cand("c", "question")]
+    n = cr.surface_candidates(cands, token="xoxb", channel="C", dry_run=False,
+                              surfaced_path=ledger, recent_pillars=[])
+    assert n == 3
+    assert len(posts) == 3                              # one message per candidate
+    rows = [json.loads(l) for l in open(ledger, encoding="utf-8") if l.strip()]
+    tss = [r["slack_ts"] for r in rows]
+    assert len(tss) == 3 and len(set(tss)) == 3         # distinct slack_ts each
+
+
 # --- 👍-gated enqueue (I-HUMAN-GATE-CONTENT) --------------------------------
 
 def _surfaced_ledger(tmp_path, cid="c1", ts="1700.5"):

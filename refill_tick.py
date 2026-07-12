@@ -57,7 +57,10 @@ def run_tick() -> int:
         try:
             recent = post_tick._recent_pillars(n=content_refill.META_WINDOW)
             candidates = content_refill.generate_candidates(recent_pillars=recent)
-            n = content_refill.surface_candidates(candidates, token, channel, dry_run=dry)
+            # Pass the SAME recent-pillar history so surface only shows currently-
+            # postable candidates (a 👍 must mean "this will post") — not the funnel.
+            n = content_refill.surface_candidates(candidates, token, channel, dry_run=dry,
+                                                  recent_pillars=recent)
             print(f"[refill_tick] surfaced {n}/{len(candidates)} candidate(s) to {channel} for review.")
         except Exception as exc:  # noqa: BLE001
             print(f"[refill_tick] generate/surface errored (non-fatal): {exc!r}")

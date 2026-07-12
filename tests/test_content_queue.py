@@ -240,3 +240,28 @@ def test_rotation_untagged_entry_never_blocks(tmp_path):
         f.write(json.dumps({"ts": "2026-07-01T00:00:00Z", "type": "ship", "raw": "legacy", "used": False}) + "\n")
     # Even if the last pillar was "" it should still post (untagged != consecutive block).
     assert content_queue.get_next_rotated(["showcase"], path=path)["raw"] == "legacy"
+
+
+# --- rotation_eligible: the shared predicate content_refill's surface uses ----
+
+def test_rotation_eligible_matches_the_rules():
+    # No history -> anything is eligible.
+    assert content_queue.rotation_eligible("meta", []) is True
+    # Same pillar as last -> blocked (no two in a row).
+    assert content_queue.rotation_eligible("showcase", ["showcase"]) is False
+    assert content_queue.rotation_eligible("operator", ["showcase"]) is True
+    # META within the 1-in-META_WINDOW cap -> blocked; a non-meta is fine.
+    assert content_queue.rotation_eligible("meta", ["meta"]) is False
+    assert content_queue.rotation_eligible("showcase", ["meta"]) is True
+    # META allowed again once it clears the window.
+    cleared = ["showcase", "operator", "ask-help", "question"]  # META_WINDOW-1 non-meta
+    assert content_queue.rotation_eligible("meta", cleared) is True
+
+
+def test_rotation_eligible_agrees_with_get_next_rotated(tmp_path):
+    # The predicate must agree with the picker's strict pass: a lone same-pillar entry
+    # is NOT eligible, yet get_next_rotated still relaxes-and-posts it as a last resort.
+    path = str(tmp_path / "q.jsonl")
+    content_queue.append_entry("only one", type="moment", pillar="showcase", path=path)
+    assert content_queue.rotation_eligible("showcase", ["showcase"]) is False       # strict
+    assert content_queue.get_next_rotated(["showcase"], path=path)["raw"] == "only one"  # relaxed pass
