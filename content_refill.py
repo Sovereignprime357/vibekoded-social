@@ -63,6 +63,12 @@ _CARD_RE = re.compile(re.escape(CARD_MARKER) + r"\s*(\{.*\})")
 # evergreen FALLBACK surface (I-NO-DECOY). Tunable via REFILL_RESEARCH_WINDOW_HOURS.
 DEFAULT_RESEARCH_WINDOW_HOURS = 18.0
 
+# An unused queue entry older than this is stale supply (rotation-stranded) and gets
+# EXPIRED so it stops faking a non-empty queue (SPEC-v8 PR C). ~5 windows/day means an
+# eligible item posts same-day; a day-old unused item is blocked, not waiting. Tunable
+# via REFILL_QUEUE_EXPIRE_HOURS.
+DEFAULT_QUEUE_EXPIRE_HOURS = 24.0
+
 DEFAULT_COUNT = 5                 # I-CADENCE-EARNED: 5/day
 EMPTY_ALERT_COOLDOWN_S = 6 * 3600  # don't spam the queue-empty alert
 
@@ -745,6 +751,28 @@ def _load_state(path: str) -> Dict[str, Any]:
 def _save_state(path: str, state: Dict[str, Any]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+
+
+def expire_stale_queue(max_age_hours: Optional[float] = None, dry_run: Optional[bool] = None) -> int:
+    """
+    Retire stale (rotation-stranded) unused queue entries so the queue-health signal is
+    honest (SPEC-v8 PR C). Delegates to content_queue.expire_stale. Skips mutation in
+    dry-run. Returns the count expired.
+    """
+    dry_run = _is_dry_run() if dry_run is None else dry_run
+    try:
+        hrs = float(max_age_hours if max_age_hours is not None
+                    else os.environ.get("REFILL_QUEUE_EXPIRE_HOURS", "") or DEFAULT_QUEUE_EXPIRE_HOURS)
+    except (TypeError, ValueError):
+        hrs = DEFAULT_QUEUE_EXPIRE_HOURS
+    if dry_run:
+        print(f"[content_refill] DRY_RUN: skipping stale-queue expiry (> {hrs:.0f}h).")
+        return 0
+    n = content_queue.expire_stale(hrs)
+    if n:
+        print(f"[content_refill] expired {n} stale unused queue entr(ies) (> {hrs:.0f}h old) "
+              f"so the queue-health signal is honest (did NOT force-post; rotation unchanged).")
+    return n
 
 
 def queue_empty_alert(

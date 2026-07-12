@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 VALID_TYPES = {"ship", "fix", "decision", "moment", "receipt"}
@@ -289,6 +289,56 @@ def mark_used(entry_ts: str, path: Optional[str] = None) -> bool:
 
 def count_unused(path: Optional[str] = None) -> int:
     return len(get_all_unused(path))
+
+
+def _parse_ts(s: Any) -> Optional[datetime]:
+    """Parse an entry `ts` to an aware UTC datetime, or None if unparseable."""
+    try:
+        dt = datetime.fromisoformat(str(s))
+    except (ValueError, TypeError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def expire_stale(
+    max_age_hours: float,
+    now: Optional[datetime] = None,
+    path: Optional[str] = None,
+) -> int:
+    """
+    Mark still-unused entries older than `max_age_hours` as EXPIRED (used=True +
+    expired=True + expired_at). Returns the count expired.
+
+    WHY (SPEC-v8 PR C — the stranded META): a candidate that pillar-rotation has left
+    unposted for a full day is stranded — with ~5 posting windows/day, anything ELIGIBLE
+    would already have gone out, so what's left this long is blocked by rotation (e.g. a
+    lone META). Left in place it fakes a "non-empty" queue and muddies the queue-health
+    signal. Expiry is the honest fix: it does NOT force-post it and does NOT weaken
+    rotation (the guard was right) — it retires stale supply. An entry with an unparseable
+    ts is left untouched (fail-safe).
+    """
+    target = _queue_path(path)
+    entries = _read_all_lines(target)
+    now = now if now is not None else datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=max_age_hours)
+
+    expired = 0
+    for e in entries:
+        if e.get("used") not in (False, None):
+            continue  # already used/expired
+        ts = _parse_ts(e.get("ts"))
+        if ts is None or ts >= cutoff:
+            continue
+        e["used"] = True
+        e["expired"] = True
+        e["expired_at"] = now.isoformat()
+        expired += 1
+
+    if expired:
+        with open(target, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+    return expired
 
 
 def candidate_ids(path: Optional[str] = None) -> set:

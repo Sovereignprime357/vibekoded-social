@@ -80,6 +80,9 @@ def run_tick() -> int:
     #    correctly won't post it, and it was invisible). recent_pillars drives the
     #    same rotation check post_tick uses.
     try:
+        # PR C: retire stale rotation-stranded entries FIRST so the alerts below reflect
+        # the real queue (a day-old lone META must not fake a non-empty, healthy queue).
+        content_refill.expire_stale_queue(dry_run=dry)
         fired_empty = content_refill.queue_empty_alert(token, channel, dry_run=dry)
         if not fired_empty:
             recent = post_tick._recent_pillars(n=content_refill.META_WINDOW)
