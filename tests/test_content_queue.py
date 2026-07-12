@@ -265,3 +265,47 @@ def test_rotation_eligible_agrees_with_get_next_rotated(tmp_path):
     content_queue.append_entry("only one", type="moment", pillar="showcase", path=path)
     assert content_queue.rotation_eligible("showcase", ["showcase"]) is False       # strict
     assert content_queue.get_next_rotated(["showcase"], path=path)["raw"] == "only one"  # relaxed pass
+
+
+# --- expire_stale: retire rotation-stranded supply (SPEC-v8 PR C) ------------
+
+def _now():
+    from datetime import datetime, timezone
+    return datetime(2026, 7, 12, 16, 0, tzinfo=timezone.utc)
+
+
+def test_expire_stale_expires_old_unused_only(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    content_queue.append_entry("stale meta", type="moment", pillar="meta",
+                               ts="2026-07-11T14:45:00+00:00", path=path)   # ~25h old
+    content_queue.append_entry("fresh question", type="moment", pillar="question",
+                               ts="2026-07-12T14:45:00+00:00", path=path)   # ~1h old
+    n = content_queue.expire_stale(24, now=_now(), path=path)
+    assert n == 1
+    rows = content_queue._read_all_lines(path)
+    stale = next(r for r in rows if r["raw"] == "stale meta")
+    fresh = next(r for r in rows if r["raw"] == "fresh question")
+    assert stale["used"] is True and stale["expired"] is True and stale["expired_at"]
+    assert fresh.get("used") is False and "expired" not in fresh   # fresh untouched
+
+
+def test_expire_stale_removes_from_unused_and_rotation(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    content_queue.append_entry("stale meta", type="moment", pillar="meta",
+                               ts="2026-07-10T00:00:00+00:00", path=path)
+    content_queue.expire_stale(24, now=_now(), path=path)
+    assert content_queue.count_unused(path) == 0                       # honest signal
+    assert content_queue.get_next_rotated([], path=path) is None       # never force-posted
+
+
+def test_expire_stale_leaves_used_and_unparseable_untouched(tmp_path):
+    path = str(tmp_path / "q.jsonl")
+    content_queue.append_entry("already posted", type="moment", pillar="operator",
+                               ts="2026-07-01T00:00:00+00:00", path=path)
+    content_queue.mark_used("2026-07-01T00:00:00+00:00", path=path)
+    content_queue.append_entry("bad ts", type="moment", pillar="showcase",
+                               ts="not-a-timestamp", path=path)
+    n = content_queue.expire_stale(24, now=_now(), path=path)
+    assert n == 0   # used entry skipped; unparseable ts left alone (fail-safe)
+    bad = next(r for r in content_queue._read_all_lines(path) if r["raw"] == "bad ts")
+    assert bad.get("used") is False and "expired" not in bad

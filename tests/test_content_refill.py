@@ -410,6 +410,26 @@ def test_stale_researched_card_outside_window_does_not_count(monkeypatch):
     assert cr.researched_cards_present(token="xoxb", channel="C", within_hours=18) is False
 
 
+# --- PR C: expire stale rotation-stranded queue entries ---------------------
+
+def test_expire_stale_queue_wrapper_expires_when_live(tmp_path, monkeypatch):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    content_queue.append_entry("old meta", type="moment", pillar="meta",
+                               ts="2026-07-01T00:00:00+00:00", path=queue)
+    n = cr.expire_stale_queue(max_age_hours=24, dry_run=False)
+    assert n == 1 and content_queue.count_unused(queue) == 0
+
+
+def test_expire_stale_queue_wrapper_skips_in_dry_run(tmp_path, monkeypatch):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    content_queue.append_entry("old meta", type="moment", pillar="meta",
+                               ts="2026-07-01T00:00:00+00:00", path=queue)
+    n = cr.expire_stale_queue(max_age_hours=24, dry_run=True)
+    assert n == 0 and content_queue.count_unused(queue) == 1   # dry-run mutates nothing
+
+
 # --- post_tick posts the approved final_text VERBATIM (no re-generation) ----
 
 def test_post_tick_posts_final_text_verbatim(tmp_path, monkeypatch):
