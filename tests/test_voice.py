@@ -67,6 +67,79 @@ def test_clean_engaging_text_passes():
     assert ok is True and why == ""
 
 
+# --- v2: demonstrative-validation openers (the "that's the play" family) -----
+
+_NEW_OPENERS_V2 = [
+    "that's the play", "that's it", "this is it", "that's exactly it", "exactly right",
+    "that's the whole thing", "that's the point", "that's the one", "you get it", "you nailed it",
+]
+
+
+def test_new_v2_openers_present_and_originals_kept():
+    for op in _NEW_OPENERS_V2:
+        assert op in voice.BANNED_OPENERS, f"missing new opener {op!r}"
+    # the original 16 are still there
+    for op in ("that's the move", "great question", "facts", "100%"):
+        assert op in voice.BANNED_OPENERS
+
+
+def test_new_v2_openers_rejected_at_head():
+    for op in _NEW_OPENERS_V2:
+        ok, why = voice.check_voice(f"{op}. here's the actual thing we shipped.")
+        assert ok is False, f"opener {op!r} not caught at head"
+        assert "praise-opener" in why
+
+
+# --- v2: trailing validation stamps (the CLOSER hole) ------------------------
+
+def test_every_banned_closer_rejected_at_tail():
+    for cl in voice.BANNED_CLOSERS:
+        ok, why = voice.check_voice(f"we shipped the index and it held under load. {cl}.")
+        assert ok is False, f"closer {cl!r} not caught at tail"
+        assert "validation stamp" in why
+
+
+def test_banned_closer_mid_text_is_allowed():
+    # "smart move" appears mid-sentence, not as the closing clause -> not the tell.
+    ok, _ = voice.check_voice(
+        "we thought that was a smart move at first, but it added latency we could not justify."
+    )
+    assert ok is True
+
+
+def test_closer_curly_apostrophe_and_trailing_quote():
+    assert voice.check_voice("shipped it. you’re on the right track.")[0] is False   # curly
+    assert voice.check_voice('locked the spec first. "you nailed it"')[0] is False   # trailing quote
+
+
+# --- the three LIVE examples (verbatim from Bluesky) -------------------------
+
+_LIVE_1 = ("yeah that makes sense. different game entirely if you need someone who can "
+           "think without the crutch. how'd they actually perform when you put them in the room?")
+_LIVE_2 = ("that's the play. invariants first, chaos second, honesty third. most people "
+           "build for the pristine case and wonder why it cracks under weight. you're "
+           "building for the real world.")
+_LIVE_3 = ("lol yeah that's the invariant check failing. spec first, then generate, then "
+           "verify against what has to be true. skip any step and you get slop. we learned "
+           "that the hard way.")
+
+
+def test_live_example_1_passes():
+    assert voice.check_voice(_LIVE_1) == (True, "")
+
+
+def test_live_example_2_rejected():
+    ok, why = voice.check_voice(_LIVE_2)
+    assert ok is False        # head "that's the play" AND tail "you're building for the real world"
+    assert why                # a rule, no body
+
+
+def test_live_example_3_passes():
+    # "that's the ..." mid-clause (after "lol yeah"), "you get slop" != "you get it",
+    # and it ends on "...the hard way." -> clean at both ends.
+    assert voice.check_voice(_LIVE_3) == (True, "")
+
+
 # --- profile load + safe-degrade ---------------------------------------------
 
 def test_voice_profile_block_empty_when_secret_absent(monkeypatch):
