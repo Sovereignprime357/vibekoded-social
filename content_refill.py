@@ -301,8 +301,12 @@ def generate_candidates(
 
 def format_candidate(rec: Dict[str, Any]) -> str:
     fresh = " · ⚠️ evergreen (low-freshness)" if rec.get("freshness") == "evergreen" else ""
+    # PILLAR on its OWN line: Slack collapses several bot messages posted in the same
+    # second into one visual block, so the header alone is ambiguous in the stack.
+    # An explicit label makes each card self-identifying no matter how it's collapsed.
     return (
-        f"*🧵 CONTENT CANDIDATE* · pillar: {rec.get('pillar')} · source: {rec.get('source')}{fresh}\n"
+        f"*🧵 CONTENT CANDIDATE* · source: {rec.get('source')}{fresh}\n"
+        f"*PILLAR: {rec.get('pillar')}*\n"
         f"_👍 to approve → enqueues to the posting queue (posts verbatim)_\n"
         f"> {rec.get('text')}"
     )
@@ -357,17 +361,40 @@ def _load_ledger(path: str) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _order_for_stack(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Never leave META at the BOTTOM of the collapsed Slack stack. Slack stacks
+    same-second bot messages and the bottom one is the easiest to react to; META
+    ending up there (it was always generated last) is exactly what funneled a 👍 onto
+    the one pillar rotation refuses to post. Float META to the TOP; others keep their
+    (already pillar-rotated) order, so the bottom of the stack varies run to run rather
+    than always being the same pillar. Deterministic, no randomness needed.
+    """
+    meta = [c for c in candidates if str(c.get("pillar") or "").strip().lower() == META]
+    rest = [c for c in candidates if str(c.get("pillar") or "").strip().lower() != META]
+    return meta + rest
+
+
 def surface_candidates(
     candidates: List[Dict[str, Any]],
     token: Optional[str] = None,
     channel: Optional[str] = None,
     dry_run: Optional[bool] = None,
     surfaced_path: Optional[str] = None,
+    recent_pillars: Optional[List[str]] = None,
 ) -> int:
     """
     Post each candidate to the review channel, capture its slack_ts, and record it in
     the surfaced ledger (status "surfaced"). Returns the count surfaced. Safe-degrade:
     no token -> print only, NO ledger, NEVER auto-posts to the public timeline.
+
+    ROTATION-AWARE (the funnel fix): a candidate whose pillar rotation would reject
+    RIGHT NOW (same pillar as the last post, or META inside the 1-in-META_WINDOW cap)
+    is NOT surfaced — because a 👍 must always mean "this will post", and surfacing an
+    un-postable candidate is the trap that quietly stalled the feed. `recent_pillars`
+    (most-recent-first, from posted.jsonl) drives the SAME predicate post_tick uses.
+    If EVERY candidate is blocked we surface nothing AND fire the queue-health alert,
+    so the operator hears about it instead of getting a silent empty batch.
     """
     dry_run = _is_dry_run() if dry_run is None else dry_run
     token = token if token is not None else os.environ.get("SLACK_BOT_TOKEN", "").strip()
@@ -376,8 +403,27 @@ def surface_candidates(
     if not candidates:
         return 0
 
-    count = 0
+    # Drop candidates rotation would reject now; explain each drop (no silent trap).
+    eligible: List[Dict[str, Any]] = []
     for rec in candidates:
+        if content_queue.rotation_eligible(rec.get("pillar"), recent_pillars):
+            eligible.append(rec)
+        else:
+            print(f"[content_refill] NOT surfacing rotation-blocked candidate "
+                  f"(pillar {rec.get('pillar')}); a thumbs-up must always mean 'this will post'.")
+
+    if not eligible:
+        # Degenerate case: the whole batch is un-postable. Do NOT surface an empty
+        # batch silently — fire the existing queue-health alert so the operator hears
+        # it (queue_empty_alert owns the empty case; else the rotation-blocked alert).
+        print("[content_refill] entire batch is rotation-blocked; surfacing nothing and firing a queue-health alert.")
+        if not queue_empty_alert(token=token, channel=channel, dry_run=dry_run):
+            queue_rotation_blocked_alert(recent_pillars=recent_pillars, token=token,
+                                         channel=channel, dry_run=dry_run)
+        return 0
+
+    count = 0
+    for rec in _order_for_stack(eligible):
         card = format_candidate(rec)
         if dry_run:
             print("---- [DRY_RUN] content candidate ----")

@@ -170,6 +170,45 @@ def _pillar_of(entry: Dict[str, Any]) -> str:
     return str(entry.get("pillar") or "").strip().lower()
 
 
+def _pillar_eligible(
+    pillar: str,
+    last_pillar: Optional[str],
+    meta_blocked: bool,
+    enforce_consecutive: bool = True,
+) -> bool:
+    """
+    The SINGLE rotation predicate (so no caller drifts from another):
+
+      - META is blocked whenever META already sits in the trailing window
+        (`meta_blocked`, i.e. META in the last META_WINDOW-1 posts). NEVER relaxed.
+      - a pillar equal to the most-recently-posted one is blocked (no two in a row)
+        when `enforce_consecutive` — this is the only rule relaxable as a last resort.
+    """
+    p = str(pillar or "").strip().lower()
+    if p == META_PILLAR and meta_blocked:
+        return False
+    if enforce_consecutive and p and last_pillar and p == last_pillar:
+        return False
+    return True
+
+
+def rotation_eligible(pillar: str, recent_pillars: Optional[List[str]] = None) -> bool:
+    """
+    True if an entry of `pillar` could post RIGHT NOW under the FULL rotation rules
+    (no-same-pillar-as-last + META ≤ 1-in-META_WINDOW). This is exactly the predicate
+    get_next_rotated uses for its strict pass — exposed so callers that decide what to
+    *ask the operator to approve* (content_refill's surface) can pre-filter to only
+    currently-postable pillars. A 👍 must always mean "this will post"; surfacing a
+    rotation-blocked candidate is a trap, not a courtesy.
+
+    `recent_pillars` = recently-posted pillars, MOST RECENT FIRST (read from posted.jsonl).
+    """
+    recent = [str(p or "").strip().lower() for p in (recent_pillars or [])]
+    last_pillar = recent[0] if recent else None
+    meta_blocked = META_PILLAR in recent[: META_WINDOW - 1]
+    return _pillar_eligible(pillar, last_pillar, meta_blocked, enforce_consecutive=True)
+
+
 def get_next_rotated(
     recent_pillars: Optional[List[str]] = None,
     path: Optional[str] = None,
@@ -205,21 +244,13 @@ def get_next_rotated(
 
     unused = get_all_unused(path)
 
-    def _eligible(entry: Dict[str, Any], enforce_consecutive: bool) -> bool:
-        p = _pillar_of(entry)
-        if p == META_PILLAR and meta_blocked:
-            return False
-        if enforce_consecutive and p and last_pillar and p == last_pillar:
-            return False
-        return True
-
-    # Pass 1: full rotation rules.
+    # Pass 1: full rotation rules (same predicate as the public rotation_eligible).
     for entry in unused:
-        if _eligible(entry, enforce_consecutive=True):
+        if _pillar_eligible(_pillar_of(entry), last_pillar, meta_blocked, enforce_consecutive=True):
             return entry
     # Pass 2: relax no-consecutive (last resort), keep META cap hard.
     for entry in unused:
-        if _eligible(entry, enforce_consecutive=False):
+        if _pillar_eligible(_pillar_of(entry), last_pillar, meta_blocked, enforce_consecutive=False):
             return entry
     return None
 
