@@ -1,2 +1,5 @@
 requests>=2.31.0
 pytest>=7.4.0
+# tzdata: guarantees zoneinfo can resolve POST_TZ (post_schedule.py / I-PACE) on
+# runners/OSes without a system tz database. Pure-python, tiny.
+tzdata>=2024.1
