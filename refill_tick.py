@@ -53,15 +53,23 @@ def run_tick() -> int:
         print(f"[refill_tick] poll_and_enqueue errored (non-fatal): {exc!r}")
 
     # Phase 2 — morning/dispatch: generate + surface a fresh batch for review.
+    # I-NO-DECOY: the bot's evergreen generator is a FALLBACK. If the operator's PC-side
+    # research task already posted researched cards to the channel this cycle, THOSE are
+    # the surface — the bot must NOT also surface evergreen (never both in one cycle).
     if _should_generate():
         try:
-            recent = post_tick._recent_pillars(n=content_refill.META_WINDOW)
-            candidates = content_refill.generate_candidates(recent_pillars=recent)
-            # Pass the SAME recent-pillar history so surface only shows currently-
-            # postable candidates (a 👍 must mean "this will post") — not the funnel.
-            n = content_refill.surface_candidates(candidates, token, channel, dry_run=dry,
-                                                  recent_pillars=recent)
-            print(f"[refill_tick] surfaced {n}/{len(candidates)} candidate(s) to {channel} for review.")
+            if content_refill.researched_cards_present(token, channel):
+                print("[refill_tick] researched candidate cards present this cycle; "
+                      "suppressing the evergreen fallback (I-NO-DECOY).")
+            else:
+                recent = post_tick._recent_pillars(n=content_refill.META_WINDOW)
+                candidates = content_refill.generate_candidates(recent_pillars=recent)
+                # Pass the SAME recent-pillar history so surface only shows currently-
+                # postable candidates (a 👍 must mean "this will post") — not the funnel.
+                n = content_refill.surface_candidates(candidates, token, channel, dry_run=dry,
+                                                      recent_pillars=recent)
+                print(f"[refill_tick] surfaced {n}/{len(candidates)} evergreen fallback candidate(s) "
+                      f"to {channel} for review.")
         except Exception as exc:  # noqa: BLE001
             print(f"[refill_tick] generate/surface errored (non-fatal): {exc!r}")
 
