@@ -33,6 +33,7 @@ from typing import Any, Dict, Optional
 import guard
 import content_queue
 import generate
+import post_schedule
 
 STATE_DIR = os.path.dirname(os.path.abspath(__file__))
 POSTED_LOG = os.path.join(STATE_DIR, "posted.jsonl")
@@ -41,6 +42,12 @@ SKIPPED_LOG = os.path.join(STATE_DIR, "skipped.jsonl")
 
 def _is_dry_run() -> bool:
     return os.environ.get("DRY_RUN", "").strip() in ("1", "true", "True", "yes")
+
+
+def _force_post() -> bool:
+    # A manual workflow_dispatch (operator posting on demand) bypasses the window
+    # schedule; the reliable-heartbeat / cron ticks are gated by it (I-PACE).
+    return os.environ.get("POST_FORCE", "").strip() in ("1", "true", "True", "yes")
 
 
 def _now_iso() -> str:
@@ -109,16 +116,48 @@ def _recent_pillars(n: int = content_queue.META_WINDOW) -> list:
     return list(reversed(pillars))[:n]
 
 
-def run_tick() -> int:
+def _fire_slot(state, slot_index, now_utc, path) -> None:
+    """Mark the due window slot fired and persist it — ONLY after a post actually went
+    out (real or dry-run). A due slot with no post left unmarked stays due so the post
+    lands late (I-PACE: missed != lost). No-op when forced (no slot claimed)."""
+    if state is None or slot_index is None:
+        return
+    post_schedule.mark_fired(state, slot_index, now_utc=now_utc)
+    try:
+        post_schedule.save_state(state, path)
+    except OSError as exc:  # noqa: BLE001 — a persistence hiccup must not crash the tick
+        print(f"[post_tick] WARNING: could not persist post schedule ({path}): {exc}")
+
+
+def run_tick(now_utc=None) -> int:
     """
     Execute one posting tick. Returns a process exit code (0 = clean run,
     1 = failure). Side effects (log writes, mark_used, real post) only
     happen along the paths described in the module docstring above.
+
+    I-PACE: unless POST_FORCE (manual dispatch), the tick only posts when a window
+    slot for today has come due and hasn't fired, and posts AT MOST ONE entry. The
+    slot is marked fired only once a post actually goes out. `now_utc` is injectable
+    for frozen-clock tests.
     """
+    schedule_path = os.environ.get("SCHEDULE_PATH") or post_schedule.DEFAULT_SCHEDULE_PATH
+    state = None
+    slot_index = None
+    if not _force_post():
+        state = post_schedule.current_state(now_utc=now_utc, path=schedule_path)
+        due = post_schedule.due_unfired_slot(state, now_utc=now_utc)
+        if due is None:
+            print("[post_tick] no post-window slot is due yet (I-PACE) — nothing to post this tick.")
+            return 0
+        slot_index, slot = due
+        print(f"[post_tick] window slot due: {slot['window']} @ {slot['time']} — attempting one post.")
+
     recent = _recent_pillars()
     entry = content_queue.get_next_rotated(recent_pillars=recent)
 
     if entry is None:
+        # A due slot with nothing postable: do NOT mark it fired — it stays due so the
+        # post lands late once the queue has eligible material (I-PACE: missed != lost).
         print("[post_tick] no postable queue entry under the pillar-rotation rules — nothing to do. (I-SUBSTANCE: never fabricate; I-PILLAR-MIX: never burst META.)")
         return 0
 
@@ -167,6 +206,7 @@ def run_tick() -> int:
         print("=" * 60)
         content_queue.mark_used(entry["ts"])
         _log_posted(entry, text, post_result=None)
+        _fire_slot(state, slot_index, now_utc, schedule_path)
         return 0
 
     try:
@@ -182,6 +222,7 @@ def run_tick() -> int:
     print(f"[post_tick] posted: uri={result.get('uri')}")
     content_queue.mark_used(entry["ts"])
     _log_posted(entry, text, result)
+    _fire_slot(state, slot_index, now_utc, schedule_path)
     return 0
 
 

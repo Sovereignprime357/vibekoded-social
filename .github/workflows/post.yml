@@ -8,16 +8,21 @@ name: post-tick
 # true within-window jitter is a nice-to-have for a later pass, not a v1
 # blocker (nothing in I-* requires literal randomized minutes).
 on:
+  # RELIABLE HEARTBEAT (SPEC-v8 §I-PACE): external scheduler → Vercel /api/heartbeat →
+  # repository_dispatch fires this on a dependable ~15-min cadence, replacing GitHub's
+  # built-in cron (which this repo's comments admit lags 2-4h). post_tick is now GATED
+  # by post_schedule.py: it posts AT MOST one entry, and ONLY when a randomized window
+  # slot for today has come due — so the frequent heartbeat does NOT machine-gun the
+  # queue. The day's cadence is bounded by the window COUNT, not the tick frequency.
+  repository_dispatch:
+    types: [heartbeat]
   schedule:
-    # 5 fixed UTC ticks/day. Each tick posts AT MOST one entry (post_tick.py
-    # is post-once-and-exit) so actual cadence is bounded by queue supply,
-    # not by this schedule — an empty queue means a tick that does nothing.
-    - cron: "17 13 * * *"  # ~morning US / midday UTC
-    - cron: "42 16 * * *"
-    - cron: "9 19 * * *"
-    - cron: "31 22 * * *"
-    - cron: "53 2 * * *"   # late-night US
-  workflow_dispatch: {}     # manual trigger from the Actions tab, any time
+    # Belt-and-braces fallback ONLY (the heartbeat is primary). A sparse cron so that if
+    # the heartbeat is down, due window slots still fire (late, not lost). NOT the pacing
+    # anymore — the schedule gate is. Two lagging cron ticks/day is plenty as a backstop.
+    - cron: "23 14 * * *"
+    - cron: "37 23 * * *"
+  workflow_dispatch: {}     # manual trigger — POST_FORCE bypasses the window gate
 
 # Prevent two ticks from racing on the same commit-back push (e.g. a manual
 # dispatch firing while a scheduled run is still in flight). Runs queue
@@ -59,6 +64,11 @@ jobs:
           # Operator VOICE PROFILE (the moat) — a SECRET, never committed. Injected
           # into generation + enforced by the mechanical voice gate. Absent -> safe-degrade.
           VOICE_PROFILE: ${{ secrets.VOICE_PROFILE }}
+          # I-PACE: the local timezone the post windows are expressed in (post_schedule.py).
+          POST_TZ: ${{ vars.POST_TZ || 'America/New_York' }}
+          # A MANUAL run posts on demand -> bypass the window gate. Heartbeat/cron ticks
+          # (POST_FORCE unset -> '0') are gated by the schedule.
+          POST_FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
           # DRY_RUN is a repo VARIABLE (not secret) so it's easy to flip
           # from the Actions UI without touching secrets. Defaults to "0"
           # (live) — set the repo variable DRY_RUN=1 to pause live posting
@@ -79,7 +89,7 @@ jobs:
           # Stage the FULL state-file superset (unchanged files are no-ops on the
           # ephemeral runner) so no state a run writes is ever left unstaged.
           git add content-queue.jsonl posted.jsonl skipped.jsonl handled.jsonl \
-                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl ops-insight-seen.jsonl frontier-followed.jsonl frontier-seen.jsonl ops-intel-log.jsonl refill-surfaced.jsonl refill-state.json
+                  drafts.jsonl scout-state.json scout-seen.jsonl scout-surfaced.jsonl act-log.jsonl ops-insight-seen.jsonl frontier-followed.jsonl frontier-seen.jsonl ops-intel-log.jsonl refill-surfaced.jsonl refill-state.json post-schedule.json
           if git diff --cached --quiet; then
             echo "No state changes to commit."
           else

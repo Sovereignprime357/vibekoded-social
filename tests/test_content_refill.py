@@ -274,6 +274,7 @@ def test_post_tick_posts_final_text_verbatim(tmp_path, monkeypatch):
     queue = str(tmp_path / "queue.jsonl")
     monkeypatch.setenv("QUEUE_PATH", queue)
     monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setenv("POST_FORCE", "1")   # bypass the I-PACE window gate (SPEC-v8); this test is about verbatim posting, not pacing
     content_queue.append_entry(raw="seed source", type="decision", pillar="operator",
                                final_text="the EXACT approved post text", path=queue)
     monkeypatch.setattr(post_tick, "POSTED_LOG", str(tmp_path / "posted.jsonl"))
