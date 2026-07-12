@@ -1,0 +1,41 @@
+{
+  "date": "2026-07-12",
+  "tz": "America/New_York",
+  "slots": [
+    {
+      "window": "morning",
+      "minutes": 513,
+      "time": "08:33",
+      "fired": true,
+      "fired_at": "2026-07-12T15:45:23Z"
+    },
+    {
+      "window": "midday",
+      "minutes": 758,
+      "time": "12:38",
+      "fired": false,
+      "fired_at": null
+    },
+    {
+      "window": "afternoon",
+      "minutes": 997,
+      "time": "16:37",
+      "fired": false,
+      "fired_at": null
+    },
+    {
+      "window": "evening",
+      "minutes": 1155,
+      "time": "19:15",
+      "fired": false,
+      "fired_at": null
+    },
+    {
+      "window": "late",
+      "minutes": 1387,
+      "time": "23:07",
+      "fired": false,
+      "fired_at": null
+    }
+  ]
+}
