@@ -9,6 +9,7 @@ import inspect
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -227,7 +228,15 @@ def _surfaced_ledger(tmp_path, cid="c1", ts="1700.5"):
     return str(p)
 
 
+def _offline(monkeypatch, tmp_path):
+    # Keep poll_and_enqueue offline + deterministic: no real channel scan, and an empty
+    # posted history so rotation blocks nothing (the ledger path is what's under test).
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [])
+    monkeypatch.setattr(cr, "POSTED_PATH", str(tmp_path / "posted.jsonl"))
+
+
 def test_enqueue_on_operator_thumbsup(tmp_path, monkeypatch):
+    _offline(monkeypatch, tmp_path)
     ledger = _surfaced_ledger(tmp_path)
     queue = str(tmp_path / "queue.jsonl")
     monkeypatch.setenv("QUEUE_PATH", queue)   # content_queue.append_entry writes here
@@ -248,6 +257,7 @@ def test_enqueue_on_operator_thumbsup(tmp_path, monkeypatch):
 
 
 def test_no_thumbsup_never_enqueues(tmp_path, monkeypatch):
+    _offline(monkeypatch, tmp_path)
     ledger = _surfaced_ledger(tmp_path)
     queue = str(tmp_path / "queue.jsonl")
     monkeypatch.setenv("QUEUE_PATH", queue)
@@ -258,6 +268,7 @@ def test_no_thumbsup_never_enqueues(tmp_path, monkeypatch):
 
 
 def test_enqueue_fail_closed_without_operator_id(tmp_path, monkeypatch):
+    _offline(monkeypatch, tmp_path)
     ledger = _surfaced_ledger(tmp_path)
     queue = str(tmp_path / "queue.jsonl")
     monkeypatch.setenv("QUEUE_PATH", queue)
@@ -266,6 +277,137 @@ def test_enqueue_fail_closed_without_operator_id(tmp_path, monkeypatch):
     n = cr.poll_and_enqueue(token="xoxb", channel="C_REFILL", operator_id=None,
                             dry_run=False, surfaced_path=ledger)
     assert n == 0 and not os.path.exists(queue)
+
+
+# --- SPEC-v8 I-NO-DECOY: Slack is the bus (channel-scan enqueue + card contract) ---
+
+def _ext_rec(cid="ext1", pillar="showcase", text="we wired the intel bus into slack today. how do you route approvals?",
+             freshness="fresh", source="research", prov_source="commit abc123: wired the slack bus"):
+    return {"id": cid, "pillar": pillar, "type": "moment", "text": text, "source": source,
+            "freshness": freshness, "provenance": {"source": prov_source, "pillar": pillar}}
+
+
+def _channel_msg(rec, ts="1800.1", reacted=True, human_prefix="here's a candidate for today:\n"):
+    # A card as the OPERATOR's PC task would post it: human text + the machine envelope.
+    text = human_prefix + f"> {rec['text']}\n" + cr.build_card_envelope(rec)
+    reactions = [{"name": "+1", "users": ["U_OP"], "count": 1}] if reacted else []
+    return {"ts": ts, "text": text, "reactions": reactions}
+
+
+def test_card_envelope_roundtrips_through_parse():
+    rec = _ext_rec(cid="z1", pillar="operator", text="spec the invariants first. what is your rule?",
+                   prov_source="merge #42")
+    card = cr.parse_card(cr.format_candidate(rec))   # bot card carries the envelope too
+    assert card["id"] == "z1" and card["pillar"] == "operator"
+    assert card["final_text"] == "spec the invariants first. what is your rule?"
+    assert card["provenance"]["source"] == "merge #42"
+
+
+def test_external_card_with_thumbsup_enqueues(tmp_path, monkeypatch):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    monkeypatch.setattr(cr, "POSTED_PATH", str(tmp_path / "posted.jsonl"))   # empty -> nothing blocked
+    monkeypatch.setattr(act, "get_reactions", lambda ch, ts, tok: [])         # ledger path empty
+    rec = _ext_rec()
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [_channel_msg(rec)])
+    n = cr.poll_and_enqueue(token="xoxb", channel="C_REFILL", operator_id="U_OP",
+                            dry_run=False, surfaced_path=str(tmp_path / "s.jsonl"))
+    assert n == 1
+    entry = json.loads(open(queue, encoding="utf-8").readline())
+    assert entry["final_text"] == rec["text"] and entry["pillar"] == "showcase"
+    assert entry["provenance"]["approved_by"] == "U_OP"
+    assert entry["provenance"]["candidate_id"] == "ext1"
+
+
+def test_same_id_thumbsup_twice_enqueues_once(tmp_path, monkeypatch):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    monkeypatch.setattr(cr, "POSTED_PATH", str(tmp_path / "posted.jsonl"))
+    monkeypatch.setattr(act, "get_reactions", lambda ch, ts, tok: [])
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [_channel_msg(_ext_rec())])
+    a = cr.poll_and_enqueue(token="xoxb", channel="C", operator_id="U_OP", dry_run=False,
+                            surfaced_path=str(tmp_path / "s.jsonl"))
+    # A second poll (simulating a later tick / restart) sees the id already in the queue.
+    b = cr.poll_and_enqueue(token="xoxb", channel="C", operator_id="U_OP", dry_run=False,
+                            surfaced_path=str(tmp_path / "s.jsonl"))
+    assert a == 1 and b == 0
+    assert sum(1 for _ in open(queue, encoding="utf-8")) == 1
+
+
+def test_rotation_blocked_external_card_is_held_not_enqueued(tmp_path, monkeypatch):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    # Last posted pillar == showcase -> a showcase card is rotation-blocked right now.
+    posted = tmp_path / "posted.jsonl"
+    posted.write_text(json.dumps({"pillar": "showcase", "text": "prev"}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(cr, "POSTED_PATH", str(posted))
+    monkeypatch.setattr(act, "get_reactions", lambda ch, ts, tok: [])
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [_channel_msg(_ext_rec(pillar="showcase"))])
+    n = cr.poll_and_enqueue(token="xoxb", channel="C", operator_id="U_OP", dry_run=False,
+                            surfaced_path=str(tmp_path / "s.jsonl"))
+    assert n == 0 and not os.path.exists(queue)   # held (not dropped), never enqueued
+
+
+def test_malformed_card_does_not_enqueue_and_logs(tmp_path, monkeypatch, capsys):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    monkeypatch.setattr(cr, "POSTED_PATH", str(tmp_path / "posted.jsonl"))
+    monkeypatch.setattr(act, "get_reactions", lambda ch, ts, tok: [])
+    bad = {"ts": "1800.9", "text": cr.CARD_MARKER + " {not valid json",
+           "reactions": [{"name": "+1", "users": ["U_OP"], "count": 1}]}
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [bad])
+    n = cr.poll_and_enqueue(token="xoxb", channel="C", operator_id="U_OP", dry_run=False,
+                            surfaced_path=str(tmp_path / "s.jsonl"))
+    assert n == 0 and not os.path.exists(queue)
+    assert "malformed" in capsys.readouterr().out.lower()
+
+
+def test_external_card_missing_provenance_rejected(tmp_path, monkeypatch, capsys):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    monkeypatch.setattr(cr, "POSTED_PATH", str(tmp_path / "posted.jsonl"))
+    monkeypatch.setattr(act, "get_reactions", lambda ch, ts, tok: [])
+    rec = _ext_rec()
+    rec["provenance"] = {}   # I-PROVENANCE: no source -> fail closed
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [_channel_msg(rec)])
+    n = cr.poll_and_enqueue(token="xoxb", channel="C", operator_id="U_OP", dry_run=False,
+                            surfaced_path=str(tmp_path / "s.jsonl"))
+    assert n == 0 and not os.path.exists(queue)
+    assert "provenance" in capsys.readouterr().out.lower()
+
+
+def test_external_card_failing_voice_gate_rejected(tmp_path, monkeypatch):
+    queue = str(tmp_path / "queue.jsonl")
+    monkeypatch.setenv("QUEUE_PATH", queue)
+    monkeypatch.setattr(cr, "POSTED_PATH", str(tmp_path / "posted.jsonl"))
+    monkeypatch.setattr(act, "get_reactions", lambda ch, ts, tok: [])
+    # An externally-authored card with an em-dash never saw generation's voice gate.
+    rec = _ext_rec(text="we wired the bus — and it just works.")
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [_channel_msg(rec)])
+    n = cr.poll_and_enqueue(token="xoxb", channel="C", operator_id="U_OP", dry_run=False,
+                            surfaced_path=str(tmp_path / "s.jsonl"))
+    assert n == 0 and not os.path.exists(queue)   # I-VOICE enforced at enqueue too
+
+
+def test_researched_cards_suppress_evergreen_fallback(monkeypatch):
+    fresh = {"ts": str(time.time()),
+             "text": cr.build_card_envelope(_ext_rec(cid="r1", freshness="fresh"))}
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [fresh])
+    assert cr.researched_cards_present(token="xoxb", channel="C") is True   # -> evergreen suppressed
+
+
+def test_evergreen_only_channel_allows_fallback(monkeypatch):
+    ever = {"ts": str(time.time()),
+            "text": cr.build_card_envelope(_ext_rec(cid="e1", freshness="evergreen", prov_source="evergreen"))}
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [ever])
+    assert cr.researched_cards_present(token="xoxb", channel="C") is False  # fallback may surface
+
+
+def test_stale_researched_card_outside_window_does_not_count(monkeypatch):
+    old = {"ts": str(time.time() - 48 * 3600),
+           "text": cr.build_card_envelope(_ext_rec(cid="old1", freshness="fresh"))}
+    monkeypatch.setattr(cr, "_conversations_history", lambda *a, **k: [old])
+    assert cr.researched_cards_present(token="xoxb", channel="C", within_hours=18) is False
 
 
 # --- post_tick posts the approved final_text VERBATIM (no re-generation) ----

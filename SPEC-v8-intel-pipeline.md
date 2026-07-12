@@ -195,3 +195,50 @@ would ever ship. The lanes stay separate. The fast lane pays; the slow lane comp
 - [ ] All existing tests pass. The voice gate, the rotation rules, and the 👍 gate are
       untouched except where this SPEC explicitly extends them.
 - [ ] The bot posts something. It has been silent since 2026-07-09.
+
+---
+
+## CARD CONTRACT (v1) — the Slack bus (added by PR B, I-NO-DECOY)
+
+Slack IS the shared state. `poll_and_enqueue` enqueues ANY operator-👍'd candidate card
+in the review channel (`C0BGDT13CN7`), no matter who posted it — the bot, or the
+operator's PC-side research task (which has no push creds and so cannot write
+`refill-surfaced.jsonl`). A card is recognized by ONE machine-readable envelope line; the
+rest of the message is human sugar and may be anything.
+
+### The envelope line (the ONLY thing the parser reads)
+
+Somewhere in the message text, on its own line:
+
+    VKS-CANDIDATE-V1: {"id":"<id>","pillar":"<pillar>","freshness":"<freshness>","final_text":"<verbatim post>","provenance":{"source":"<real build event>"}}
+
+- **Marker**: literally `VKS-CANDIDATE-V1:` followed by a space, then a single-line,
+  compact JSON object. Match is `VKS-CANDIDATE-V1:\s*(\{.*\})`. Emit the JSON on ONE line.
+- **`id`** — stable, unique string. The durable dedup key: an id that has ever been
+  enqueued (it persists in `content-queue.jsonl`) never enqueues again, even across
+  restarts or a lost ledger. Reuse the same id if you re-post the same candidate.
+- **`pillar`** — exactly one of: `showcase`, `operator`, `ask-help`, `dreaming`,
+  `question`, `meta`.
+- **`freshness`** — `"evergreen"` marks low-value filler (the bot's fallback). ANY other
+  value (e.g. `"fresh"`) marks a researched card; a researched card in the channel this
+  cycle SUPPRESSES the bot's evergreen fallback (I-NO-DECOY). Never dress evergreen as fresh.
+- **`final_text`** — the EXACT post body, posted verbatim to Bluesky. JSON-escaped, so
+  it may contain newlines/quotes. Must pass the voice gate (no em/en-dashes, no
+  praise-opener, no trailing validation stamp) and the privacy guard.
+- **`provenance`** — object; MUST carry a non-empty `"source"` naming the real build
+  event it came from (commit/merge/incident/reversal). I-PROVENANCE: no source ⇒ rejected.
+  `type` (optional): one of `ship|fix|decision|moment|receipt` (defaults to `moment`).
+
+### Rules
+
+- **One card = one message = one reaction target** (I-GATE). Never a digest with one
+  reaction bar for many candidates.
+- The human-facing part should state the pillar plainly (the bot renders `*PILLAR: <p>*`).
+- **Verification at ENQUEUE time** (external text never saw generation): fields present →
+  provenance present → voice gate → privacy guard → rotation eligibility. A card that
+  can't be parsed or can't be verified does NOT enqueue and logs the tripped rule (never
+  the body). A card that is valid but currently rotation-blocked is HELD, not dropped — it
+  enqueues on a later poll once rotation clears (I-APPROVABLE edge case).
+- The bot's own surfaced cards carry the identical envelope, so one parser + one dedup
+  covers both sources. The `refill-surfaced.jsonl` ledger is now an optimization for older
+  bot cards, not a requirement.

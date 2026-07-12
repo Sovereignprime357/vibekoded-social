@@ -289,3 +289,19 @@ def mark_used(entry_ts: str, path: Optional[str] = None) -> bool:
 
 def count_unused(path: Optional[str] = None) -> int:
     return len(get_all_unused(path))
+
+
+def candidate_ids(path: Optional[str] = None) -> set:
+    """
+    Every `provenance.candidate_id` present in the queue file — used OR unused. This
+    is the DURABLE dedup key for approved-candidate enqueue (SPEC-v8 I-NO-DECOY): a
+    posted entry stays in the file (mark_used only flips the flag), so an id seen here
+    has already been enqueued at some point and must never enqueue again — even across
+    process restarts, and regardless of whether the Slack ledger survived.
+    """
+    ids: set = set()
+    for e in _read_all_lines(path):
+        cid = (e.get("provenance") or {}).get("candidate_id")
+        if cid:
+            ids.add(str(cid))
+    return ids

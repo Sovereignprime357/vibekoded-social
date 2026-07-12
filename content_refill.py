@@ -23,8 +23,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 
@@ -32,6 +33,7 @@ import act
 import content_queue
 import generate
 import guard
+import voice
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SURFACED_PATH = os.path.join(HERE, "refill-surfaced.jsonl")
@@ -44,6 +46,22 @@ GRADUATED_PATH = os.path.join(HERE, "graduated-intel.jsonl")
 
 DEFAULT_REFILL_CHANNEL = "C0BGDT13CN7"
 SLACK_POST_MESSAGE_EP = "https://slack.com/api/chat.postMessage"
+SLACK_HISTORY_EP = "https://slack.com/api/conversations.history"
+
+# --- CARD CONTRACT (SPEC-v8 §CARD CONTRACT) --------------------------------------
+# Slack is the shared bus: ANY 👍'd candidate card in the channel can enqueue, no
+# matter who posted it (the bot, or the operator's PC-side research task which has no
+# push creds and so cannot write refill-surfaced.jsonl). Every card carries ONE
+# machine-readable envelope line — a stable marker + compact JSON with exactly the
+# fields the queue needs. The rest of the card is human sugar. The envelope is the
+# source of truth (final_text lives here verbatim, JSON-escaped, so multi-line/markdown
+# survives). See the SPEC for the byte-for-byte contract the PC task matches.
+CARD_MARKER = "VKS-CANDIDATE-V1:"
+# The JSON is emitted compact and single-line, so match to the last brace on that line.
+_CARD_RE = re.compile(re.escape(CARD_MARKER) + r"\s*(\{.*\})")
+# How far back a generate+surface cycle looks for researched cards before it lets the
+# evergreen FALLBACK surface (I-NO-DECOY). Tunable via REFILL_RESEARCH_WINDOW_HOURS.
+DEFAULT_RESEARCH_WINDOW_HOURS = 18.0
 
 DEFAULT_COUNT = 5                 # I-CADENCE-EARNED: 5/day
 EMPTY_ALERT_COOLDOWN_S = 6 * 3600  # don't spam the queue-empty alert
@@ -299,17 +317,71 @@ def generate_candidates(
 # ---------------------------------------------------------------------------
 
 
+def build_card_envelope(rec: Dict[str, Any]) -> str:
+    """The machine-readable envelope line (CARD CONTRACT). Carries exactly the fields
+    the queue needs; final_text is verbatim (JSON-escaped). Same line the PC task emits."""
+    payload = {
+        "id": rec.get("id"),
+        "pillar": rec.get("pillar"),
+        "freshness": rec.get("freshness") or "evergreen",
+        "final_text": rec.get("text"),
+        "provenance": rec.get("provenance") or {},
+    }
+    return CARD_MARKER + " " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def format_candidate(rec: Dict[str, Any]) -> str:
     fresh = " · ⚠️ evergreen (low-freshness)" if rec.get("freshness") == "evergreen" else ""
     # PILLAR on its OWN line: Slack collapses several bot messages posted in the same
     # second into one visual block, so the header alone is ambiguous in the stack.
     # An explicit label makes each card self-identifying no matter how it's collapsed.
+    # The trailing envelope line lets poll_and_enqueue map a 👍 back to a candidate even
+    # if the ledger is gone (Slack is the bus). Human reads the top; the machine reads the tail.
     return (
         f"*🧵 CONTENT CANDIDATE* · source: {rec.get('source')}{fresh}\n"
         f"*PILLAR: {rec.get('pillar')}*\n"
         f"_👍 to approve → enqueues to the posting queue (posts verbatim)_\n"
-        f"> {rec.get('text')}"
+        f"> {rec.get('text')}\n"
+        f"{build_card_envelope(rec)}"
     )
+
+
+def parse_card(text: str) -> Optional[Dict[str, Any]]:
+    """Extract the candidate envelope from a Slack message's text, or None if the
+    message isn't a candidate card / the envelope is malformed (fail-closed — an
+    unparseable card simply isn't a candidate)."""
+    if not text:
+        return None
+    m = _CARD_RE.search(text)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _conversations_history(token: str, channel: str, limit: int = 100, timeout: int = 15) -> List[Dict[str, Any]]:
+    """Recent channel messages (each with its inline `reactions`), newest-first. Never
+    raises — a Slack error degrades to [] (we just enqueue nothing this poll)."""
+    if not token or not channel:
+        return []
+    try:
+        resp = requests.get(
+            SLACK_HISTORY_EP,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"channel": channel, "limit": limit},
+            timeout=timeout,
+        )
+        data = resp.json() if resp.content else {}
+    except (requests.RequestException, ValueError) as exc:
+        print(f"[content_refill] conversations.history error (non-fatal): {exc}")
+        return []
+    if not data.get("ok"):
+        print(f"[content_refill] conversations.history rejected for {channel}: {data.get('error')}")
+        return []
+    return data.get("messages", []) or []
 
 
 def _post_slack_web(text: str, token: str, channel: str, timeout: int = 15) -> Optional[str]:
@@ -447,8 +519,112 @@ def surface_candidates(
 
 
 # ---------------------------------------------------------------------------
-# 👍-gated enqueue (I-HUMAN-GATE-CONTENT) — reuses act's operator-thumbsup poll
+# 👍-gated enqueue (I-HUMAN-GATE-CONTENT) — Slack is the bus (SPEC-v8 I-NO-DECOY)
 # ---------------------------------------------------------------------------
+
+
+def _recent_posted_pillars(n: int = META_WINDOW, path: Optional[str] = None) -> List[str]:
+    """Recent posted pillars, MOST RECENT FIRST (from posted.jsonl) — the same rotation
+    memory post_tick uses, so enqueue-time eligibility matches post-time eligibility."""
+    target = path or POSTED_PATH
+    if not os.path.exists(target):
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        with open(target, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    pillars = [str(r.get("pillar") or "").strip().lower() for r in rows]
+    return list(reversed(pillars))[:n]
+
+
+def _verify_card(card: Dict[str, Any], recent_pillars: List[str]) -> Tuple[str, str]:
+    """
+    Verify a 👍'd candidate card at ENQUEUE time. Returns (verdict, reason), verdict in:
+      - "reject": the card is unusable and must NOT enqueue (fail-closed). Reasons never
+        include the body/profile — only the generic rule that tripped.
+      - "hold":   the card is valid but rotation-blocked RIGHT NOW (I-APPROVABLE). Do not
+        enqueue and do not drop — leave the 👍 standing so a later poll enqueues it once
+        rotation clears (SPEC edge: a stale-but-valid approval is held, not lost).
+      - "ok":     enqueue it.
+
+    Enforces the guards on EXTERNALLY-posted text too (it never saw generation): fields
+    present (I-GATE mappable), provenance present (I-PROVENANCE), voice gate (I-VOICE),
+    privacy guard (I-PRIVACY), then rotation eligibility (I-APPROVABLE).
+    """
+    cid = str(card.get("id") or "").strip()
+    pillar = str(card.get("pillar") or "").strip().lower()
+    final_text = str(card.get("final_text") or "").strip()
+    prov = card.get("provenance")
+    if not cid:
+        return "reject", "missing candidate id"
+    if pillar not in content_queue.VALID_PILLARS:
+        return "reject", "invalid or absent pillar"
+    if not final_text:
+        return "reject", "empty final_text"
+    if not isinstance(prov, dict) or not str(prov.get("source") or "").strip():
+        return "reject", "missing provenance source (I-PROVENANCE fail-closed)"
+    vok, _ = voice.check_voice(final_text)
+    if not vok:
+        return "reject", "voice gate rejected the card text (I-VOICE)"
+    gok, _ = guard.check(final_text)
+    if not gok:
+        return "reject", "privacy guard blocked the card text (I-PRIVACY)"
+    if not content_queue.rotation_eligible(pillar, recent_pillars):
+        return "hold", "rotation-blocked right now (I-APPROVABLE) — held for a later cycle"
+    return "ok", ""
+
+
+def _try_enqueue(
+    card: Dict[str, Any],
+    seen_ids: Set[str],
+    recent_pillars: List[str],
+    operator_id: str,
+    dry_run: bool,
+    slack_ts: Optional[str],
+    channel: Optional[str],
+    surfaced_path: str,
+) -> int:
+    """Enqueue one 👍'd, verified card. Dedups on candidate id (durable, across restarts).
+    Returns 1 if enqueued, else 0. Never raises."""
+    cid = str(card.get("id") or "").strip()
+    if cid and cid in seen_ids:
+        return 0  # already enqueued/posted at some point (I-NO-DECOY dedup) — never twice
+    verdict, reason = _verify_card(card, recent_pillars)
+    if verdict == "reject":
+        print(f"[content_refill] card {cid or '?'} NOT enqueued: {reason}")
+        return 0
+    if verdict == "hold":
+        print(f"[content_refill] card {cid} held (not dropped): {reason}")
+        return 0
+    if dry_run:
+        print(f"[content_refill] DRY_RUN would enqueue card {cid} (pillar {card.get('pillar')})")
+        return 0
+    prov = dict(card.get("provenance") or {})
+    prov.update({"approved_by": operator_id, "approved_at": _now_iso(),
+                 "slack_ts": slack_ts, "candidate_id": cid})
+    try:
+        content_queue.append_entry(
+            raw=card["final_text"], type=card.get("type", "moment"), pillar=card["pillar"],
+            final_text=card["final_text"], provenance=prov,
+        )
+    except Exception as exc:  # noqa: BLE001 — a bad entry must not crash the tick
+        print(f"[content_refill] enqueue failed for {cid}: {exc!r}")
+        return 0
+    if cid:
+        seen_ids.add(cid)
+    _append_ledger({"id": cid, "ts": _now_iso(), "status": "enqueued",
+                    "slack_ts": slack_ts, "slack_channel": channel}, surfaced_path)
+    print(f"[content_refill] enqueued approved candidate {cid} (pillar {card.get('pillar')}).")
+    return 1
 
 
 def poll_and_enqueue(
@@ -459,12 +635,20 @@ def poll_and_enqueue(
     surfaced_path: Optional[str] = None,
 ) -> int:
     """
-    Poll the review channel for the OPERATOR's 👍 on surfaced candidates; each 👍'd
-    candidate is appended to content-queue.jsonl as a pre-approved `final_text` with a
-    provenance/approval trail, then marked enqueued (dedup). Returns count enqueued.
+    Promote every OPERATOR-👍'd candidate card in the channel into content-queue.jsonl as
+    a pre-approved `final_text` (posted verbatim later), with a provenance/approval trail.
+    Returns count enqueued.
 
-    I-HUMAN-GATE-CONTENT: nothing enqueues without the operator's explicit 👍. Reuses
-    act.operator_thumbsup (fail-closed without an operator id) + act.get_reactions.
+    Slack IS the shared state (SPEC-v8 I-NO-DECOY): the primary path SCANS the channel and
+    recognizes ANY card matching the CARD CONTRACT — including cards posted by the
+    operator's PC-side research task, which has no push creds and so can't write the
+    surfaced ledger. The ledger path is kept as a backward-compat OPTIMIZATION for older
+    bot-surfaced cards whose Slack message predates the envelope. Both funnel through the
+    same verify + dedup, so a card that appears in both enqueues exactly once.
+
+    I-HUMAN-GATE-CONTENT: nothing enqueues without THIS operator's explicit 👍 (fail-closed
+    without an operator id). I-APPROVABLE / I-PROVENANCE / I-VOICE / I-PRIVACY are all
+    re-checked here (external text never saw generation) — see _verify_card.
     """
     dry_run = _is_dry_run() if dry_run is None else dry_run
     token = token if token is not None else os.environ.get("SLACK_BOT_TOKEN", "").strip()
@@ -472,40 +656,75 @@ def poll_and_enqueue(
     surfaced_path = surfaced_path or SURFACED_PATH
     if not token:
         return 0
-
-    ledger = _load_ledger(surfaced_path)
-    pending = [r for r in ledger.values() if r.get("status") == "surfaced" and r.get("slack_ts")]
-    if not pending:
-        return 0
     if not operator_id:
         print("[content_refill] SLACK_OPERATOR_USER_ID not set — cannot verify operator 👍; "
               "nothing enqueues (I-HUMAN-GATE-CONTENT fail-closed).")
         return 0
 
+    recent = _recent_posted_pillars()
+    seen_ids = content_queue.candidate_ids()  # durable dedup: ids already in the queue file
     enqueued = 0
-    for rec in pending:
+
+    # --- Primary: scan the channel (works for bot- AND externally-posted cards) ---
+    for msg in _conversations_history(token, channel):
+        text = msg.get("text", "")
+        card = parse_card(text)
+        if not card:
+            if CARD_MARKER in (text or ""):
+                # Looks like a card (has the marker) but the envelope won't parse ->
+                # fail-closed: do NOT enqueue, and say so (I-GATE unmappable otherwise).
+                print("[content_refill] skipping malformed candidate card: unparseable envelope.")
+            continue  # not a candidate card
+        if not act.operator_thumbsup(msg.get("reactions"), operator_id):
+            continue  # not approved (or not by the operator) — leave it for a later poll
+        enqueued += _try_enqueue(card, seen_ids, recent, operator_id, dry_run,
+                                 msg.get("ts"), channel, surfaced_path)
+
+    # --- Backward-compat: the surfaced ledger (optimization, not a requirement) ---
+    ledger = _load_ledger(surfaced_path)
+    for rec in [r for r in ledger.values() if r.get("status") == "surfaced" and r.get("slack_ts")]:
+        card = {"id": rec.get("id"), "pillar": rec.get("pillar"), "type": rec.get("type", "moment"),
+                "freshness": rec.get("freshness"), "final_text": rec.get("text"),
+                "provenance": rec.get("provenance") or {}}
         reactions = act.get_reactions(rec["slack_channel"], rec["slack_ts"], token)
         if not act.operator_thumbsup(reactions, operator_id):
-            continue  # not approved yet — leave surfaced for a later poll
-        if dry_run:
-            print(f"[content_refill] DRY_RUN would enqueue candidate {rec['id']} (pillar {rec.get('pillar')})")
             continue
-        prov = dict(rec.get("provenance") or {})
-        prov.update({"approved_by": operator_id, "approved_at": _now_iso(),
-                     "slack_ts": rec.get("slack_ts"), "candidate_id": rec["id"]})
-        try:
-            content_queue.append_entry(
-                raw=rec["text"], type=rec.get("type", "moment"), pillar=rec.get("pillar"),
-                final_text=rec["text"], provenance=prov,
-            )
-        except Exception as exc:  # noqa: BLE001 — a bad entry must not crash the tick
-            print(f"[content_refill] enqueue failed for {rec['id']}: {exc!r}")
-            continue
-        _append_ledger({"id": rec["id"], "ts": _now_iso(), "status": "enqueued",
-                        "slack_ts": rec.get("slack_ts"), "slack_channel": rec.get("slack_channel")}, surfaced_path)
-        enqueued += 1
-        print(f"[content_refill] enqueued approved candidate {rec['id']} (pillar {rec.get('pillar')}).")
+        enqueued += _try_enqueue(card, seen_ids, recent, operator_id, dry_run,
+                                 rec.get("slack_ts"), rec.get("slack_channel"), surfaced_path)
     return enqueued
+
+
+def researched_cards_present(
+    token: Optional[str] = None,
+    channel: Optional[str] = None,
+    within_hours: Optional[float] = None,
+) -> bool:
+    """
+    True if a RESEARCHED (non-evergreen) candidate card was posted to the channel within
+    the current cycle window. I-NO-DECOY: the bot's evergreen generator is a FALLBACK — it
+    only surfaces when research yielded nothing, so exactly one system surfaces per cycle.
+    """
+    token = token if token is not None else os.environ.get("SLACK_BOT_TOKEN", "").strip()
+    channel = channel or _channel()
+    if not token:
+        return False
+    try:
+        within = float(within_hours if within_hours is not None
+                       else os.environ.get("REFILL_RESEARCH_WINDOW_HOURS", "") or DEFAULT_RESEARCH_WINDOW_HOURS)
+    except (TypeError, ValueError):
+        within = DEFAULT_RESEARCH_WINDOW_HOURS
+    cutoff = time.time() - within * 3600.0
+    for msg in _conversations_history(token, channel):
+        try:
+            ts = float(msg.get("ts", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts < cutoff:
+            continue
+        card = parse_card(msg.get("text", ""))
+        if card and str(card.get("freshness") or "").strip().lower() not in ("", "evergreen"):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
