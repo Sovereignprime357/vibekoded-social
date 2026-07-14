@@ -27,8 +27,8 @@
       "window": "evening",
       "minutes": 1272,
       "time": "21:12",
-      "fired": false,
-      "fired_at": null
+      "fired": true,
+      "fired_at": "2026-07-14T01:15:20Z"
     },
     {
       "window": "late",
