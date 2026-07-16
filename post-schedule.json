@@ -34,8 +34,8 @@
       "window": "late",
       "minutes": 1371,
       "time": "22:51",
-      "fired": false,
-      "fired_at": null
+      "fired": true,
+      "fired_at": "2026-07-16T03:01:06Z"
     }
   ]
 }
