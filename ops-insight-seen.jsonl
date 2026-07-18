@@ -11047,3 +11047,5 @@
 {"uri": "at://did:plc:gi52qkxvblxkwdoe4eqga6d3/app.bsky.feed.post/3mqwrwn53ux24", "author_handle": "saram.io", "status": "posted", "ts": "2026-07-18T17:27:42Z"}
 {"uri": "at://did:plc:gi52qkxvblxkwdoe4eqga6d3/app.bsky.feed.post/3mqwrwdfyd32x", "author_handle": "saram.io", "status": "extract_empty", "ts": "2026-07-18T17:27:43Z"}
 {"uri": "at://did:plc:gi52qkxvblxkwdoe4eqga6d3/app.bsky.feed.post/3mqwrvfr6c323", "author_handle": "saram.io", "status": "posted", "ts": "2026-07-18T17:27:46Z"}
+{"uri": "at://did:plc:hopmfdwkfldzd3fqlbgrxkhv/app.bsky.feed.post/3mqws3devdk2t", "author_handle": "bluedotin.bsky.social", "status": "not_insight", "ts": "2026-07-18T17:30:32Z"}
+{"uri": "at://did:plc:p7esesjynu7nnbkrdwex6ngr/app.bsky.feed.post/3mqws2di2ds2y", "author_handle": "dorknessdevil.bsky.social", "status": "not_insight", "ts": "2026-07-18T17:30:32Z"}
