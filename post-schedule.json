@@ -1,39 +1,39 @@
 {
-  "date": "2026-07-20",
+  "date": "2026-07-21",
   "tz": "America/New_York",
   "slots": [
     {
       "window": "morning",
-      "minutes": 516,
-      "time": "08:36",
+      "minutes": 636,
+      "time": "10:36",
       "fired": true,
-      "fired_at": "2026-07-20T18:30:41Z"
+      "fired_at": "2026-07-21T15:00:48Z"
     },
     {
       "window": "midday",
-      "minutes": 780,
-      "time": "13:00",
-      "fired": true,
-      "fired_at": "2026-07-20T19:00:46Z"
+      "minutes": 737,
+      "time": "12:17",
+      "fired": false,
+      "fired_at": null
     },
     {
       "window": "afternoon",
-      "minutes": 988,
-      "time": "16:28",
-      "fired": true,
-      "fired_at": "2026-07-20T20:30:40Z"
+      "minutes": 996,
+      "time": "16:36",
+      "fired": false,
+      "fired_at": null
     },
     {
       "window": "evening",
-      "minutes": 1188,
-      "time": "19:48",
-      "fired": true,
-      "fired_at": "2026-07-21T00:00:28Z"
+      "minutes": 1211,
+      "time": "20:11",
+      "fired": false,
+      "fired_at": null
     },
     {
       "window": "late",
-      "minutes": 1395,
-      "time": "23:15",
+      "minutes": 1423,
+      "time": "23:43",
       "fired": false,
       "fired_at": null
     }
