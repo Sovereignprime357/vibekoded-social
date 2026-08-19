@@ -9863,3 +9863,7 @@
 {"ts": "2026-08-19T05:59:36Z", "uri": "at://did:plc:rqlzvqpxfdzz4uioyvu2aahu/app.bsky.feed.post/3mt6i4v2hcc23", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
 {"ts": "2026-08-19T05:59:36Z", "uri": "at://did:plc:qc4jf26bqlqzsxnmfwtaxgnj/app.bsky.feed.post/3mt6hx2z2je2a", "action": "reply", "status": "expired", "reason": "un-acted >72h since surfaced"}
 {"ts": "2026-08-19T05:59:36Z", "uri": "at://did:plc:hrdajc5tkzovqmpu55baqjlq/app.bsky.feed.post/3mt6hevfn3c2p", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
+{"ts": "2026-08-19T07:49:22Z", "uri": "at://did:plc:fqwfxlpk6ldahp3f6puymhpz/app.bsky.feed.post/3mt6kkyoy4c2g", "action": "reply", "status": "expired", "reason": "un-acted >72h since surfaced"}
+{"ts": "2026-08-19T07:49:22Z", "uri": "at://did:plc:rjlk6v6bctebhibcdrq4yj7e/app.bsky.feed.post/3mt6ivvmfpk22", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
+{"ts": "2026-08-19T07:49:22Z", "uri": "at://did:plc:tunlqwnjwpgzrrk6q5m2myqt/app.bsky.feed.post/3mt6miekqle2y", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
+{"ts": "2026-08-19T07:49:22Z", "uri": "at://did:plc:ztejvprwhqgzgvfiekcj73m2/app.bsky.feed.post/3mt6lntcjgs22", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
