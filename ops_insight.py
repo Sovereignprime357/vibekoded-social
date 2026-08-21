@@ -1,11 +1,15 @@
 """
-ops_insight.py — the Ops-Insight Harvest (SPEC-v6): a review-only knowledge lens.
+ops_insight.py — the Ops-Insight Harvest: THE lens of the miner.
 
-A SECOND triage lens over data the bot ALREADY pulls (scout candidates + notify
-replies). When a post carries a genuine, TRANSFERABLE build-with-AI technique that
-could improve the operator's own systems, it: cheaply FLAGS it, deeply EXTRACTS a
-structured brief (bounded), privacy-guards the brief, and posts it to a review-only
-Slack channel with PROVENANCE. It NEVER acts and NEVER writes to any brain/memory.
+Rewired 2026-08-21 (SPEC-vibekoded-social-miner, BRAIN2.0): the broadcast half of this
+system is retired; this lens is now the product. Over the candidates the scout already
+pulls, it hunts NAMED MECHANISMS on agent memory / context engineering / agent
+architecture: cheaply FLAGS (high bar — aggregator/content-marketing/unsourced-stat
+posts are the measured noise floor and are NOT insights), deeply EXTRACTS a structured
+brief (bounded, watchlist authors first), privacy-guards it, appends it to the
+ops-intel log (the weekly distill's feedstock), and optionally posts to the review
+channel. It NEVER acts and NEVER writes to any brain/memory — the weekly distill on
+the operator's PC is the only thing that turns briefs into (PROPOSED) brain writes.
 
 Invariants (SPEC-v6):
   - I-NO-AUTO-BRAIN : only Slack + a dedup ledger; no brain/memory write anywhere.
@@ -30,6 +34,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+import frontier
 import generate
 import guard
 
@@ -84,6 +89,14 @@ def _ops_channel() -> str:
     return os.environ.get("SLACK_CHANNEL_OPS_INTEL", "").strip() or DEFAULT_OPS_CHANNEL
 
 
+def _tier_of_item(item: Dict[str, Any]) -> Optional[str]:
+    """Watchlist tier of the item's author (None if not watchlisted). Never raises."""
+    try:
+        return frontier.tier_of(str(item.get("author_handle", "")))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Item normalization (reuse-only: shapes scout candidates + notify replies)
 # ---------------------------------------------------------------------------
@@ -119,13 +132,17 @@ def normalize_item(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 _FLAG_LENS = (
-    "You screen builder posts for ONE thing: a genuine, TRANSFERABLE technique or piece of "
-    "knowledge about BUILDING WITH AI — AI orchestration, agentic workflows, prompt/spec "
-    "technique, evals, agent memory, tooling — that could plausibly improve how an AI-building "
-    "operator builds their own systems.\n"
-    "FLAG (ops_insight=true) ONLY for that. Do NOT flag: generic hot-takes, opinions, "
-    "engagement bait, news, announcements, marketing, vague enthusiasm. The bar is HIGH — "
-    "when in doubt, do NOT flag. Most posts are NOT insights."
+    "You screen posts for ONE thing: a NAMED, TRANSFERABLE MECHANISM about building with AI — "
+    "agent memory architecture, context engineering (compaction, retrieval strategy, context "
+    "budgets, context rot), agentic workflow / orchestration / harness design, spec or eval "
+    "method, or a real production engineering writeup. The test is HOW, not THAT: the post "
+    "must state or directly link HOW the technique works. \n"
+    "FLAG (ops_insight=true) ONLY for that. Do NOT flag: aggregator/news/link-roundup/trend-"
+    "bot content, content marketing, product announcements, listicles, unsourced statistics "
+    "used as hooks ('agents lose 83% of context'), generic best-practice tips, hot-takes, or "
+    "enthusiasm. Real practitioners state mechanisms; bots recycle summaries. The bar is "
+    "HIGH — most posts are NOT insights, an all-false batch is a normal outcome, and when in "
+    "doubt, do NOT flag."
 )
 
 
@@ -205,20 +222,22 @@ def flag_items(items: List[Dict[str, Any]], model: Optional[str] = None) -> List
 
 def build_extract_prompt(text: str, author_handle: str) -> str:
     return (
-        "A builder posted the text below. It appears to contain a transferable technique for "
-        "building with AI. Extract a tight brief for an operator who builds AI-orchestrated "
-        "software (a spec-driven framework, an autonomous social bot, client builds).\n\n"
+        "A practitioner posted the text below. It appears to contain a transferable MECHANISM "
+        "for building with AI. Extract a tight brief for an operator who runs a flat-file "
+        "memory 'brain' + spec-driven agent orchestration (skills, patterns, scheduled agent "
+        "sessions, an index-based retrieval layer).\n\n"
         f'Author: @{author_handle}\nPost:\n"""{text.strip()}"""\n\n'
         "Respond with ONLY a JSON object — no prose, no fence:\n"
         "{\n"
-        '  "insight": "<the technique/knowledge, concretely, 1-2 sentences>",\n'
-        '  "applies": "<why it applies to our systems, specific>",\n'
-        '  "effect": "<what adopting it would actually do>",\n'
-        '  "why_improves": "<why it would improve our vibe-coded outcomes>"\n'
+        '  "insight": "<the MECHANISM: what it is and HOW it works, concretely, 1-2 sentences>",\n'
+        '  "applies": "<which part of an agent/memory/orchestration system it maps to, specific>",\n'
+        '  "effect": "<what adopting it would actually change>",\n'
+        '  "why_improves": "<the causal reason it improves outcomes + what evidence the post offers (paper/repo/writeup/numbers)>"\n'
         "}\n"
-        "If on reflection there is NO genuinely transferable technique here (just opinion / "
-        'hype / vagueness), return {"insight": ""} and nothing else. Be honest — a false '
-        "positive wastes the operator's attention."
+        "Decline hard: if there is NO named mechanism (an outcome claim with no how), or the "
+        "claim rests on an unsourced statistic, or it is generic advice any practitioner "
+        'already knows, return {"insight": ""} and nothing else. A false positive wastes the '
+        "operator's attention; an empty extract is a pass, not a failure."
     )
 
 
@@ -373,6 +392,7 @@ def append_log(brief: Dict[str, str], item: Dict[str, Any], path: Optional[str] 
         "source_uri": uri,
         "ts": _now_iso(),
         "author_handle": item.get("author_handle"),
+        "author_tier": _tier_of_item(item),
         "link": item.get("url"),
         "insight": brief.get("insight", ""),
         "applies": brief.get("applies", ""),
@@ -418,6 +438,7 @@ def harvest(
     extract_model_id: Optional[str] = None,
     max_per_tick: Optional[int] = None,
     log_path: Optional[str] = None,
+    flagged_out: Optional[set] = None,
 ) -> int:
     """
     Run the harvest over already-pulled `items` (scout candidates / notify replies).
@@ -452,12 +473,21 @@ def harvest(
 
     flags = flag_items(fresh, flag_model)
 
+    # Miner rewire (2026-08-21): watchlist authors get extract PRIORITY — the bounded
+    # deep-extract budget is spent on the curated lode first. Stable sort keeps scan
+    # order within a tier: study_closely, then high_signal, then everyone else.
+    _prio = {frontier.STUDY_CLOSELY: 0, frontier.HIGH_SIGNAL: 1}
+    pairs = sorted(zip(fresh, flags), key=lambda p: _prio.get(_tier_of_item(p[0]), 2))
+
     posted = 0
     extracted = 0
-    for it, is_flag in zip(fresh, flags):
+    for it, is_flag in pairs:
         if not is_flag:
             mark_seen(it, "not_insight", seen_path)
             continue
+        if flagged_out is not None:
+            # The lens's flag doubles as the "notable" signal for the frontier feed.
+            flagged_out.add(it["uri"])
         if extracted >= max_per_tick:
             # Hard per-tick cap on the DEEP model. Remaining flagged items are left
             # UNSEEN so a later tick re-considers them (cheap re-flag) — bounded.

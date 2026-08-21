@@ -1,20 +1,27 @@
 {
-  "_comment": "Frontier watchlist (SPEC-v7). Curated accounts get auto-followed, weighted higher in scout ranking, and monitored in the frontier Slack channel. Two tiers. Handles are Bluesky handles (no leading @); add more under high_signal over time.",
+  "_comment": "Frontier watchlist (SPEC-v7, re-tiered 2026-08-21 for the miner repurpose — SPEC-vibekoded-social-miner in BRAIN2.0). Curated accounts get auto-followed, weighted higher in ranking, extract PRIORITY in the ops-insight lens, and monitoring in the frontier Slack channel. Every handle here was verified live against public.api.bsky.app on 2026-08-21 (profile resolves + recent activity). Tiers study_closely/high_signal are read by frontier.py; dormant_on_bluesky is deliberately IGNORED by the code — it parks real people whose Bluesky went quiet >6 months (disable, never delete).",
   "tiers": {
     "study_closely": {
-      "_note": "Top tier — EVERY post surfaces to the frontier channel (full monitoring). The operator's genre-twin: an AI running a company in public, to study + copy moves.",
+      "_note": "Top tier — EVERY post surfaces to the frontier channel and gets extract priority. Low-volume, all-mechanism posters on the exact mining lanes (agent memory / context engineering).",
       "handles": [
-        "0coceo.bsky.social"
+        "0coceo.bsky.social",
+        "charlespacker.bsky.social",
+        "sarahwooders.bsky.social"
       ]
     },
     "high_signal": {
-      "_note": "Seed set — their notable / on-mission posts surface to the frontier channel; all get the ranking boost + auto-follow. More added over time.",
+      "_note": "Verified practitioners: their lens-flagged posts surface, all get ranking boost + auto-follow + extract priority over non-watchlist authors. Added 2026-08-21: letta.com (org, memory frameworks), dexhorthy (12-factor agents / advanced context engineering), s.ly (Jesse Vincent, Superpowers harness), mariozechner.at (pi coding agent/harness teardowns), tomaarsen.com (Sentence Transformers, retrieval), olickel.com (Hrishi Olickel, context essays), ghuntley.com (agent loops, slow cadence), kentonvarda.com (Cloudflare Code Mode, slow cadence).",
       "handles": [
-        "alexalbert.bsky.social",
-        "bcherny.bsky.social",
+        "letta.com",
+        "dexhorthy.bsky.social",
+        "s.ly",
+        "mariozechner.at",
+        "tomaarsen.com",
+        "olickel.com",
+        "ghuntley.com",
+        "kentonvarda.com",
         "thedsp.bsky.social",
         "lydiahallie.com",
-        "colah.bsky.social",
         "lampinen.bsky.social",
         "simonwillison.net",
         "natolambert.bsky.social",
@@ -27,11 +34,19 @@
         "pamelafox.bsky.social",
         "dbreunig.bsky.social",
         "xeiaso.net",
-        "petar-v.bsky.social",
         "dynamicwebpaige.bsky.social",
         "tmaker.io",
         "steipete.me",
         "arvidkahl.bsky.social"
+      ]
+    },
+    "dormant_on_bluesky": {
+      "_note": "Real people, dead Bluesky accounts (verified 2026-08-21: alexalbert last post 2025-02, bcherny 2025-06, colah 2025-08, petar-v 2025-06). NOT read by frontier.py — parked here so they are one move back if they return. Their current work reaches us via the off-platform lode in MISSION-FILTER.md, not via these handles.",
+      "handles": [
+        "alexalbert.bsky.social",
+        "bcherny.bsky.social",
+        "colah.bsky.social",
+        "petar-v.bsky.social"
       ]
     }
   }
