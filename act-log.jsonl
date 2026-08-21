@@ -10459,3 +10459,13 @@
 {"ts": "2026-08-21T13:16:04Z", "uri": "at://did:plc:3odpz5wxuofzbd7dat3chhzx/app.bsky.feed.post/3mte7h4utuu2t", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
 {"ts": "2026-08-21T13:16:04Z", "uri": "at://did:plc:qhhysueanatpo4bfmffrfddc/app.bsky.feed.post/3mte6eefesh2g", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
 {"ts": "2026-08-21T13:16:04Z", "uri": "at://did:plc:gi2r7lxhr5ins44vakjbr524/app.bsky.feed.post/3mte6jigjwc23", "action": "like", "status": "expired", "reason": "un-acted >72h since surfaced"}
+{"ts": "2026-08-21T14:26:34Z", "action": "follow", "status": "executed", "author_did": "did:plc:pazl47aogbhrhddfpil7enhn", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:26:54Z", "action": "follow", "status": "executed", "author_did": "did:plc:pxpd4i2mnbexpiomqsptncml", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:27:15Z", "action": "follow", "status": "executed", "author_did": "did:plc:ezk65mic3tgvgkhirsnpt355", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:27:35Z", "action": "follow", "status": "executed", "author_did": "did:plc:hjbubljrcthwhkaeiojd3hun", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:27:55Z", "action": "follow", "status": "executed", "author_did": "did:plc:kbjet2membeuramtzua3vd7w", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:28:15Z", "action": "follow", "status": "executed", "author_did": "did:plc:7syfakzcriq44mwbdbc7jwvn", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:28:36Z", "action": "follow", "status": "executed", "author_did": "did:plc:m6ap5q4z7josicg7jccpu4ni", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:28:56Z", "action": "follow", "status": "executed", "author_did": "did:plc:faolllgklh6xbn3nkdk53q7e", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:29:16Z", "action": "follow", "status": "executed", "author_did": "did:plc:r63key5ilrlzklg2sqcocgug", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
+{"ts": "2026-08-21T14:29:36Z", "action": "follow", "status": "executed", "author_did": "did:plc:qq22si2wbz7yuxxquk6hvoto", "source": "frontier", "approval_mode": "auto:frontier-watchlist"}
