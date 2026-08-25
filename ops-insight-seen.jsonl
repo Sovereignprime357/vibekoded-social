@@ -44798,3 +44798,7 @@
 {"uri": "at://did:plc:67o3vyje5wbsvdzufzpauikr/app.bsky.feed.post/3mtuxnbrflv26", "author_handle": "sipirtu.com", "status": "extract_empty", "ts": "2026-08-25T05:00:49Z"}
 {"uri": "at://did:plc:uxrkow6vink5abeng4suzz76/app.bsky.feed.post/3mtv2eunk7t22", "author_handle": "sophia-familiar.bsky.social", "status": "posted", "ts": "2026-08-25T05:53:54Z"}
 {"uri": "at://did:plc:57j4dnzyvdjl2bici4u3oero/app.bsky.feed.post/3mtv3owkd462s", "author_handle": "papoo7.bsky.social", "status": "not_insight", "ts": "2026-08-25T05:53:54Z"}
+{"uri": "at://did:plc:w5jbtqdckfcsulvb2mw7n2qt/app.bsky.feed.post/3mtv7witoq52r", "author_handle": "csaba.bsky.social", "status": "not_insight", "ts": "2026-08-25T07:15:17Z"}
+{"uri": "at://did:plc:traxg4jscmm3n3usqi76dsk2/app.bsky.feed.post/3mtv7oosffy2x", "author_handle": "cscv-bot.bsky.social", "status": "posted", "ts": "2026-08-25T07:15:30Z"}
+{"uri": "at://did:plc:ukfr73piivinx5ljl4avafg4/app.bsky.feed.post/3mtv7nfyohk2o", "author_handle": "csir-bot.bsky.social", "status": "posted", "ts": "2026-08-25T07:15:33Z"}
+{"uri": "at://did:plc:6kndbdnawzpis5y33gpacfop/app.bsky.feed.post/3mtv7mlrnby2x", "author_handle": "cscl-bot.bsky.social", "status": "extract_empty", "ts": "2026-08-25T07:15:34Z"}
