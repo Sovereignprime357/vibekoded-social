@@ -46537,3 +46537,6 @@
 {"uri": "at://did:plc:uja2sra7o23euvoihe3j7hgq/app.bsky.feed.post/3mv2lhzgndc2z", "author_handle": "grall101.bsky.social", "status": "not_insight", "ts": "2026-09-09T05:00:05Z"}
 {"uri": "at://did:plc:vy2djvziq2td3fyjg6nqs7i5/app.bsky.feed.post/3mv2eunz47k2e", "author_handle": "downbad.forex", "status": "not_insight", "ts": "2026-09-09T05:00:05Z"}
 {"uri": "at://did:plc:6amf2dzllh6lvnsqxsr4nf6e/app.bsky.feed.post/3mv2cxlq7kc2a", "author_handle": "advanced-eschatonics.com", "status": "not_insight", "ts": "2026-09-09T05:00:05Z"}
+{"uri": "at://did:plc:pazl47aogbhrhddfpil7enhn/app.bsky.feed.post/3mv2tuj7npc2v", "author_handle": "charlespacker.bsky.social", "status": "guard_blocked", "ts": "2026-09-09T09:55:36Z"}
+{"uri": "at://did:plc:ieah3ocmnoxxsxa7tsnxbhnz/app.bsky.feed.post/3mv34krsnbq2s", "author_handle": "glonce.com", "status": "posted", "ts": "2026-09-09T09:55:40Z"}
+{"uri": "at://did:plc:joj2wp43ajdu7st22gmpglyl/app.bsky.feed.post/3mv2wrvtrm72c", "author_handle": "csse-bot.bsky.social", "status": "extract_empty", "ts": "2026-09-09T09:55:41Z"}
