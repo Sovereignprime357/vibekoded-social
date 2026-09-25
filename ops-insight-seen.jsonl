@@ -48118,3 +48118,13 @@
 {"uri": "at://did:plc:z2ifqfazewmriuuur23tbo7x/app.bsky.feed.post/3mwcf57pba22d", "author_handle": "axialis.com", "status": "not_insight", "ts": "2026-09-25T01:39:24Z"}
 {"uri": "at://did:plc:ibm4rcbvo6l3bcdseqbc2663/app.bsky.feed.post/3mwccwpclqf2z", "author_handle": "hn-frontpage-bot.bsky.social", "status": "not_insight", "ts": "2026-09-25T01:39:24Z"}
 {"uri": "at://did:plc:2pgnv3aw5dhgz47345v5nfpu/app.bsky.feed.post/3mwcdhlkpfj2m", "author_handle": "vritrasecnews.bsky.social", "status": "not_insight", "ts": "2026-09-25T01:39:24Z"}
+{"uri": "at://did:plc:df4dbsajjtvbbjn5poliesvs/app.bsky.feed.post/3mwd5xwmx5o27", "author_handle": "csai-bot.bsky.social", "status": "extract_empty", "ts": "2026-09-25T07:59:36Z"}
+{"uri": "at://did:plc:df4dbsajjtvbbjn5poliesvs/app.bsky.feed.post/3mwd5wtqlls2m", "author_handle": "csai-bot.bsky.social", "status": "guard_blocked", "ts": "2026-09-25T07:59:40Z"}
+{"uri": "at://did:plc:df4dbsajjtvbbjn5poliesvs/app.bsky.feed.post/3mwd5w7ggvs2m", "author_handle": "csai-bot.bsky.social", "status": "posted", "ts": "2026-09-25T07:59:44Z"}
+{"uri": "at://did:plc:klbfgjmctm45hkkz6kzw3tip/app.bsky.feed.post/3mwcx23w3qs2m", "author_handle": "saveboy.bsky.social", "status": "not_insight", "ts": "2026-09-25T07:59:44Z"}
+{"uri": "at://did:plc:ukvymonlw4qm7e2klgcrgiu3/app.bsky.feed.post/3mwcpaqgvo326", "author_handle": "ryandaaldo.bsky.social", "status": "not_insight", "ts": "2026-09-25T07:59:44Z"}
+{"uri": "at://did:plc:tu2cqafj5uqkh7spvvavydxw/app.bsky.feed.post/3mwdaafhgas2p", "author_handle": "jamesmillman3113.bsky.social", "status": "not_insight", "ts": "2026-09-25T07:59:44Z"}
+{"uri": "at://did:plc:ysfzemwxu27bazfwwmdxb5pj/app.bsky.feed.post/3mwd4gw6e4s2q", "author_handle": "cfim360.com", "status": "not_insight", "ts": "2026-09-25T07:59:44Z"}
+{"uri": "at://did:plc:ysfzemwxu27bazfwwmdxb5pj/app.bsky.feed.post/3mwd4a7uixc2q", "author_handle": "cfim360.com", "status": "not_insight", "ts": "2026-09-25T07:59:44Z"}
+{"uri": "at://did:plc:67o3vyje5wbsvdzufzpauikr/app.bsky.feed.post/3mwcosi4fsi2i", "author_handle": "sipirtu.com", "status": "not_insight", "ts": "2026-09-25T07:59:44Z"}
+{"uri": "at://did:plc:3mbqqo3dxddhl7nwqmghsn6a/app.bsky.feed.post/3mwd65w5ywk2s", "author_handle": "cslg-bot.bsky.social", "status": "not_insight", "ts": "2026-09-25T07:59:44Z"}
