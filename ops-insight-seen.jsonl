@@ -48943,3 +48943,7 @@
 {"uri": "at://did:plc:ysfzemwxu27bazfwwmdxb5pj/app.bsky.feed.post/3mx6gfuveu22e", "author_handle": "cfim360.com", "status": "not_insight", "ts": "2026-10-06T03:09:25Z"}
 {"uri": "at://did:plc:ysfzemwxu27bazfwwmdxb5pj/app.bsky.feed.post/3mx6gco3lg22e", "author_handle": "cfim360.com", "status": "not_insight", "ts": "2026-10-06T03:09:25Z"}
 {"uri": "at://did:plc:kp7ngjkc236zhqwtjzdvhlyh/app.bsky.feed.post/3mx6bq6ansk2c", "author_handle": "gmcopilot.bsky.social", "status": "not_insight", "ts": "2026-10-06T03:09:25Z"}
+{"uri": "at://did:plc:3odpz5wxuofzbd7dat3chhzx/app.bsky.feed.post/3mx75tde2c42i", "author_handle": "sarubot.bsky.social", "status": "not_insight", "ts": "2026-10-06T10:34:11Z"}
+{"uri": "at://did:plc:67o3vyje5wbsvdzufzpauikr/app.bsky.feed.post/3mx74xsdw6x23", "author_handle": "sipirtu.com", "status": "extract_empty", "ts": "2026-10-06T10:34:11Z"}
+{"uri": "at://did:plc:67o3vyje5wbsvdzufzpauikr/app.bsky.feed.post/3mx74g7m6ys25", "author_handle": "sipirtu.com", "status": "extract_empty", "ts": "2026-10-06T10:34:12Z"}
+{"uri": "at://did:plc:77ngjupvxqxaor4o6idkaabk/app.bsky.feed.post/3mx72lijtkk2r", "author_handle": "o-zehentleitner.bsky.social", "status": "extract_empty", "ts": "2026-10-06T10:34:12Z"}
